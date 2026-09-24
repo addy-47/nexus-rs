@@ -3,13 +3,24 @@ use std::collections::HashSet;
 use futures_util::future::join_all;
 
 use crate::error::NexusError;
-use crate::model::{Engine, EngineHit, TimeFilter};
+use crate::model::{Engine, EngineHit, EngineQueryMetrics, TimeFilter};
 
 pub mod bing;
 pub mod duckduckgo;
 pub mod helpers;
 pub mod mojeek;
 pub mod yahoo;
+
+/// Result outcome containing deduplicated hits and granular per-engine telemetry.
+#[derive(Clone, Debug, Default)]
+pub struct FanoutOutcome {
+    /// Deduplicated candidate hits.
+    pub hits: Vec<EngineHit>,
+    /// Per-engine query metrics.
+    pub metrics: Vec<EngineQueryMetrics>,
+    /// Total raw hits aggregated before deduplication.
+    pub total_raw_hits: usize,
+}
 
 /// Multi-engine concurrent fanout orchestrator.
 #[derive(Clone, Debug)]
@@ -32,14 +43,14 @@ impl EngineFanout {
         Self { engines }
     }
 
-    /// Queries all enabled engines concurrently and returns deduplicated hits.
+    /// Queries all enabled engines concurrently and returns deduplicated hits with metrics.
     pub async fn query_all(
         &self,
         query: &str,
         time_filter: TimeFilter,
-    ) -> Result<Vec<EngineHit>, NexusError> {
+    ) -> Result<FanoutOutcome, NexusError> {
         if self.engines.is_empty() {
-            return Ok(Vec::new());
+            return Ok(FanoutOutcome::default());
         }
 
         let client = build_tls_client()?;
@@ -48,26 +59,50 @@ impl EngineFanout {
             let client_ref = client.clone();
             let q = query.to_owned();
             async move {
-                (
-                    engine,
-                    dispatch_engine_query(&client_ref, engine, &q, time_filter).await,
-                )
+                let start = std::time::Instant::now();
+                let res = dispatch_engine_query(&client_ref, engine, &q, time_filter).await;
+                let latency_ms = start.elapsed().as_millis() as u64;
+                (engine, res, latency_ms)
             }
         });
 
         let task_results = join_all(tasks).await;
         let mut all_hits = Vec::new();
+        let mut engine_metrics = Vec::with_capacity(self.engines.len());
         let mut successful_queries = 0usize;
+        let mut total_raw_hits = 0usize;
 
-        for (engine, res) in task_results {
+        for (engine, res, latency_ms) in task_results {
             match res {
                 Ok(hits) => {
                     successful_queries += 1;
-                    log::info!("[Nexus::Engines] {engine} yielded {} hits", hits.len());
+                    total_raw_hits += hits.len();
+                    log::info!(
+                        "[Nexus::Engines] {engine} yielded {} hits in {}ms",
+                        hits.len(),
+                        latency_ms
+                    );
+                    engine_metrics.push(EngineQueryMetrics {
+                        engine,
+                        latency_ms,
+                        hit_count: hits.len(),
+                        success: true,
+                        error: None,
+                    });
                     all_hits.push(hits);
                 }
                 Err(e) => {
-                    log::warn!("[Nexus::Engines] {engine} query error: {e}");
+                    log::warn!(
+                        "[Nexus::Engines] {engine} query error after {}ms: {e}",
+                        latency_ms
+                    );
+                    engine_metrics.push(EngineQueryMetrics {
+                        engine,
+                        latency_ms,
+                        hit_count: 0,
+                        success: false,
+                        error: Some(e.to_string()),
+                    });
                 }
             }
         }
@@ -78,7 +113,12 @@ impl EngineFanout {
             });
         }
 
-        Ok(interleave_and_deduplicate(all_hits))
+        let deduplicated = interleave_and_deduplicate(all_hits);
+        Ok(FanoutOutcome {
+            hits: deduplicated,
+            metrics: engine_metrics,
+            total_raw_hits,
+        })
     }
 }
 

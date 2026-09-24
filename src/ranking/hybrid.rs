@@ -6,25 +6,41 @@ use crate::traits::TextEmbedder;
 
 const RRF_K: f32 = 60.0;
 
+/// Telemetry metrics for Reciprocal Rank Fusion hybrid ranking.
+#[derive(Clone, Debug, Default)]
+pub struct HybridRankingMetrics {
+    /// Sparse BM25 scoring duration in milliseconds.
+    pub sparse_ms: u64,
+    /// Dense embedding and cosine similarity scoring duration in milliseconds.
+    pub dense_ms: u64,
+    /// Reciprocal Rank Fusion calculation duration in milliseconds.
+    pub rrf_ms: u64,
+}
+
 /// Combines sparse and dense scoring using Reciprocal Rank Fusion (RRF with k=60).
 pub async fn rank_hybrid(
     query: &str,
     passages: &mut [ScoredPassage],
     embedder: &dyn TextEmbedder,
-) -> Result<(), NexusError> {
+) -> Result<HybridRankingMetrics, NexusError> {
     if passages.is_empty() {
-        return Ok(());
+        return Ok(HybridRankingMetrics::default());
     }
 
     let n = passages.len();
 
     // 1. Compute sparse BM25 scores in input order
+    let sparse_start = std::time::Instant::now();
     let sparse_scores = score_bm25(query, passages);
+    let sparse_ms = sparse_start.elapsed().as_millis() as u64;
 
     // 2. Compute dense cosine similarity scores in input order
+    let dense_start = std::time::Instant::now();
     let dense_scores = score_dense(query, passages, embedder).await?;
+    let dense_ms = dense_start.elapsed().as_millis() as u64;
 
     // 3. Compute 1-based ranks from scores in O(n log n)
+    let rrf_start = std::time::Instant::now();
     let sparse_ranks = compute_ranks(&sparse_scores);
     let dense_ranks = compute_ranks(&dense_scores);
 
@@ -40,7 +56,13 @@ pub async fn rank_hybrid(
     }
 
     passages.sort_by(|a, b| b.score.total_cmp(&a.score));
-    Ok(())
+    let rrf_ms = rrf_start.elapsed().as_millis() as u64;
+
+    Ok(HybridRankingMetrics {
+        sparse_ms,
+        dense_ms,
+        rrf_ms,
+    })
 }
 
 /// Converts a slice of scores into 1-based ranks (1 = highest score).

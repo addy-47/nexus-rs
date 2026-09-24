@@ -92,13 +92,86 @@ pub struct ScoredPassage {
     pub dense_score: Option<f32>,
 }
 
+/// Telemetry metrics for an individual search engine provider query.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct EngineQueryMetrics {
+    /// Engine identifier.
+    pub engine: Engine,
+    /// Query latency in milliseconds.
+    pub latency_ms: u64,
+    /// Number of candidate hits returned.
+    pub hit_count: usize,
+    /// Whether the engine query succeeded.
+    pub success: bool,
+    /// Sanitized error description if query failed.
+    pub error: Option<String>,
+}
+
+/// Telemetry metrics for fetching an individual candidate web page.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct PageFetchMetrics {
+    /// Initial requested URL.
+    pub requested_url: String,
+    /// Final URL after following redirects.
+    pub final_url: Option<String>,
+    /// DNS pre-flight and validation duration in milliseconds.
+    pub dns_resolution_ms: u64,
+    /// Total network fetch duration including all redirect hops in milliseconds.
+    pub total_fetch_ms: u64,
+    /// Response body bytes read.
+    pub bytes_read: usize,
+    /// Number of redirect hops followed.
+    pub hop_count: usize,
+    /// Whether the fetch operation succeeded.
+    pub success: bool,
+    /// Error message if fetch failed.
+    pub error: Option<String>,
+}
+
+/// Comprehensive latency and throughput metrics across all pipeline stages.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct NexusSearchMetrics {
+    /// Total search pipeline execution duration in milliseconds.
+    pub total_pipeline_ms: u64,
+    /// Stage 1A: Total engine fanout duration in milliseconds.
+    pub fanout_total_ms: u64,
+    /// Stage 1A: Per-engine query metrics.
+    pub engines: Vec<EngineQueryMetrics>,
+    /// Stage 1A: Total raw hits aggregated before deduplication.
+    pub total_raw_hits: usize,
+    /// Stage 1A: Deduplicated candidate hits.
+    pub deduplicated_hits: usize,
+    /// Stage 1B: Total page fetch duration in milliseconds.
+    pub fetch_total_ms: u64,
+    /// Stage 1B: Per-URL fetch metrics.
+    pub pages_fetched: Vec<PageFetchMetrics>,
+    /// Stage 1C: Total DOM cleaning and Markdown conversion duration in milliseconds.
+    pub extraction_total_ms: u64,
+    /// Stage 2A: Total sliding-window chunking duration in milliseconds.
+    pub chunking_total_ms: u64,
+    /// Stage 2A: Number of passage chunks produced across all extracted documents.
+    pub total_passages_generated: usize,
+    /// Stage 2B: Total ranking duration in milliseconds.
+    pub ranking_total_ms: u64,
+    /// Ranking mode utilized.
+    pub ranking_mode: RankingMode,
+    /// BM25 sparse scoring duration in milliseconds, if executed.
+    pub sparse_ranking_ms: Option<u64>,
+    /// Neural dense embedding and cosine similarity duration in milliseconds, if executed.
+    pub dense_ranking_ms: Option<u64>,
+    /// Reciprocal Rank Fusion calculation duration in milliseconds, if executed.
+    pub rrf_fusion_ms: Option<u64>,
+}
+
 /// Complete result envelope returned by a nexus search execution.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct NexusSearchResult {
     /// Raw extracted documents from fetched candidate URLs.
     pub raw_pages: Vec<RawPage>,
     /// All chunked passages ranked in descending order of relevance.
     pub scored_passages: Vec<ScoredPassage>,
+    /// Granular latency and telemetry metrics across all pipeline stages.
+    pub metrics: NexusSearchMetrics,
 }
 
 /// Configuration options controlling a search query execution.

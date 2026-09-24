@@ -1,28 +1,43 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use reqwest::StatusCode;
 use reqwest::header::LOCATION;
+use reqwest::StatusCode;
 use url::Url;
 
 use super::client::read_bounded_body;
 use super::connector::build_pinned_client;
 use super::dns::resolve_and_validate_host;
 use crate::error::NexusError;
+use crate::model::PageFetchMetrics;
 
 const MAX_REDIRECT_HOPS: usize = 5;
 
+/// Successful page retrieval outcome containing content and granular network timing metrics.
+#[derive(Clone, Debug)]
+pub struct FetchedPageOutcome {
+    /// Final URL destination after redirect navigation.
+    pub final_url: String,
+    /// Decoded body content.
+    pub body: String,
+    /// Granular fetch and DNS telemetry metrics.
+    pub metrics: PageFetchMetrics,
+}
+
 /// Fetches a URL by executing a manual redirect loop with per-hop DNS pre-flight and socket pinning.
-/// Returns a tuple of `(final_url, body_content)`.
+/// Returns `FetchedPageOutcome` containing `final_url`, `body`, and `PageFetchMetrics`.
 pub async fn fetch_with_redirect_vetting(
     initial_url: &str,
     timeout: Duration,
     max_response_bytes: usize,
-) -> Result<(String, String), NexusError> {
+) -> Result<FetchedPageOutcome, NexusError> {
+    let overall_start = Instant::now();
     tokio::time::timeout(timeout, async {
         let mut current_url = parse_and_validate_scheme(initial_url)?;
         let mut cached_client: Option<(String, u16, reqwest::Client)> = None;
+        let mut total_dns_ms = 0u64;
 
         for hop in 0..MAX_REDIRECT_HOPS {
+            let hop_count = hop + 1;
             let (host, port) = extract_host_and_port(&current_url)?;
             let client = match cached_client {
                 Some((ref cached_host, cached_port, ref c))
@@ -31,7 +46,9 @@ pub async fn fetch_with_redirect_vetting(
                     c.clone()
                 }
                 _ => {
+                    let dns_start = Instant::now();
                     let resolved_addrs = resolve_and_validate_host(&host, port).await?;
+                    total_dns_ms += dns_start.elapsed().as_millis() as u64;
                     let c = build_pinned_client(&host, &resolved_addrs, timeout)?;
                     cached_client = Some((host.clone(), port, c.clone()));
                     c
@@ -59,7 +76,25 @@ pub async fn fetch_with_redirect_vetting(
 
             let body =
                 read_bounded_body(response, current_url.as_str(), max_response_bytes).await?;
-            return Ok((current_url.to_string(), body));
+            let bytes_read = body.len();
+            let total_fetch_ms = overall_start.elapsed().as_millis() as u64;
+
+            let metrics = PageFetchMetrics {
+                requested_url: initial_url.to_string(),
+                final_url: Some(current_url.to_string()),
+                dns_resolution_ms: total_dns_ms,
+                total_fetch_ms,
+                bytes_read,
+                hop_count,
+                success: true,
+                error: None,
+            };
+
+            return Ok(FetchedPageOutcome {
+                final_url: current_url.to_string(),
+                body,
+                metrics,
+            });
         }
 
         Err(NexusError::TooManyRedirects {

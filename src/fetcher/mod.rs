@@ -32,6 +32,29 @@ impl Default for EgressFetcher {
     }
 }
 
+/// Result item for an individual candidate page fetch attempt.
+#[derive(Debug)]
+pub struct FetchedPageResult {
+    /// Requested URL.
+    pub requested_url: String,
+    /// Result containing `(final_url, body_text)` on success or error on failure.
+    pub outcome: Result<(String, String), NexusError>,
+    /// Telemetry and latency metrics for this fetch attempt.
+    pub metrics: crate::model::PageFetchMetrics,
+}
+
+impl FetchedPageResult {
+    /// Returns true if the page fetch was successful.
+    pub fn is_ok(&self) -> bool {
+        self.outcome.is_ok()
+    }
+
+    /// Returns true if the page fetch resulted in an error.
+    pub fn is_err(&self) -> bool {
+        self.outcome.is_err()
+    }
+}
+
 impl EgressFetcher {
     /// Constructs an egress fetcher with caller-specified timeout and byte bounds.
     pub fn new(timeout: Duration, max_response_bytes: usize) -> Self {
@@ -49,10 +72,30 @@ impl EgressFetcher {
         }
     }
 
-    /// Fetches a single page by URL, applying full SSRF and redirect validation.
-    /// Returns `(final_url, body_content)`.
-    pub async fn fetch_page(&self, url: &str) -> Result<(String, String), NexusError> {
-        redirect::fetch_with_redirect_vetting(url, self.timeout, self.max_response_bytes).await
+    /// Fetches a single page by URL, applying full SSRF and redirect validation with metrics.
+    pub async fn fetch_page(&self, url: &str) -> FetchedPageResult {
+        let start = std::time::Instant::now();
+        match redirect::fetch_with_redirect_vetting(url, self.timeout, self.max_response_bytes).await {
+            Ok(res) => FetchedPageResult {
+                requested_url: url.to_string(),
+                outcome: Ok((res.final_url, res.body)),
+                metrics: res.metrics,
+            },
+            Err(e) => FetchedPageResult {
+                requested_url: url.to_string(),
+                metrics: crate::model::PageFetchMetrics {
+                    requested_url: url.to_string(),
+                    final_url: None,
+                    dns_resolution_ms: 0,
+                    total_fetch_ms: start.elapsed().as_millis() as u64,
+                    bytes_read: 0,
+                    hop_count: 0,
+                    success: false,
+                    error: Some(e.to_string()),
+                },
+                outcome: Err(e),
+            },
+        }
     }
 
     /// Fetches multiple URLs concurrently while strictly preserving input order.
@@ -60,7 +103,7 @@ impl EgressFetcher {
         &self,
         urls: &[String],
         concurrency: usize,
-    ) -> Vec<(String, Result<(String, String), NexusError>)> {
+    ) -> Vec<FetchedPageResult> {
         let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
         let mut futures = FuturesOrdered::new();
 
@@ -71,8 +114,7 @@ impl EgressFetcher {
 
             futures.push_back(async move {
                 let _permit = sem.acquire().await;
-                let result = fetcher.fetch_page(&target_url).await;
-                (target_url, result)
+                fetcher.fetch_page(&target_url).await
             });
         }
 
