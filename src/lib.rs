@@ -13,8 +13,8 @@ pub use builder::NexusSearchBuilder;
 pub use error::NexusError;
 pub use fetcher::EgressFetcher;
 pub use model::{
-    Engine, EngineHit, NexusSearchMetrics, NexusSearchOptions, NexusSearchResult, RankingMode,
-    RawPage, ScoredPassage, TimeFilter,
+    Engine, EngineHit, FanoutPolicy, NexusSearchMetrics, NexusSearchOptions, NexusSearchResult,
+    RankingMode, RankingPolicy, RawPage, ScoredPassage, TimeFilter,
 };
 pub use pipeline::NexusSearch;
 pub use traits::TextEmbedder;
