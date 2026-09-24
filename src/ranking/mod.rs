@@ -1,5 +1,7 @@
+use std::collections::HashSet;
+
 use crate::error::NexusError;
-use crate::model::{RankingMode, ScoredPassage};
+use crate::model::{RankingMode, RankingPolicy, ScoredPassage};
 use crate::traits::TextEmbedder;
 
 pub mod bm25;
@@ -25,6 +27,8 @@ pub async fn rank_passages(
     passages: &mut [ScoredPassage],
     mode: RankingMode,
     embedder: Option<&dyn TextEmbedder>,
+    policy: &RankingPolicy,
+    consensus_urls: Option<&HashSet<String>>,
 ) -> Result<RankingMetricsOutcome, NexusError> {
     let start = std::time::Instant::now();
     match mode {
@@ -61,7 +65,7 @@ pub async fn rank_passages(
                     "Hybrid ranking mode requires a configured TextEmbedder".to_string(),
                 ));
             };
-            let metrics = hybrid::rank_hybrid(query, passages, emb).await?;
+            let metrics = hybrid::rank_hybrid(query, passages, emb, policy, consensus_urls).await?;
             Ok(RankingMetricsOutcome {
                 sparse_ranking_ms: Some(metrics.sparse_ms),
                 dense_ranking_ms: Some(metrics.dense_ms),

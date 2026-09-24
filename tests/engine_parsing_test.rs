@@ -150,3 +150,67 @@ async fn test_canonicalize_url_strips_tracking_params_and_fragments() {
     .await
     .expect("test timed out");
 }
+
+#[tokio::test]
+async fn test_norm_url_key_collapses_variants_and_tracking() {
+    use nexus::engines::helpers::norm_url_key;
+
+    assert_eq!(
+        norm_url_key("https://www.docs.rs/ratatui/index.html"),
+        norm_url_key("http://docs.rs/ratatui/")
+    );
+
+    let tracked = norm_url_key(
+        "https://example.com/search?topic=rust&utm_source=newsletter&page=2&gclid=abc",
+    );
+    let clean = norm_url_key("https://example.com/search?topic=rust&page=2");
+    let different = norm_url_key("https://example.com/search?topic=rust&page=3");
+
+    assert_eq!(tracked, clean);
+    assert_ne!(clean, different);
+}
+
+#[tokio::test]
+async fn test_google_wml_parsing_and_url_unescaping() {
+    use nexus::engines::google_wml::parse_google_wml_html;
+
+    let wml_html = r#"<?xml version="1.0" encoding="UTF-8"?>
+    <div class="zMzFAb">
+        <a class="fuLhoc" href="/url?q=https%3A%2F%2Fexample.org%2F%3Fa%3D1%26b%3D2&amp;sa=U">
+            <span class="CVA68e">Rust &amp; TLS</span>
+        </a>
+        <div class="taTFJ"><span class="FrIlee">Native <b>HTTP</b> transport</span></div>
+    </div>
+    <div class="zMzFAb">
+        <a class="fuLhoc" href="https://example.org/?a=1&amp;b=2">
+            <span class="CVA68e">Duplicate Hit</span>
+        </a>
+    </div>
+    <div class="zMzFAb">
+        <a class="fuLhoc" href="https://example.org/distinct">
+            <span class="CVA68e">Distinct Page</span>
+        </a>
+        <div class="taTFJ"><span class="FrIlee">Another snippet</span></div>
+    </div>"#;
+
+    let hits = parse_google_wml_html(wml_html).expect("Google WML parsing should succeed");
+    assert_eq!(hits.len(), 2, "Duplicate URL must be suppressed");
+    assert_eq!(hits[0].engine, Engine::GoogleWml);
+    assert_eq!(hits[0].title, "Rust & TLS");
+    assert_eq!(hits[0].url, "https://example.org/?a=1&b=2");
+    assert!(hits[0].snippet.contains("Native HTTP transport"));
+
+    assert_eq!(hits[1].title, "Distinct Page");
+    assert_eq!(hits[1].url, "https://example.org/distinct");
+}
+
+#[tokio::test]
+async fn test_google_wml_challenge_detection() {
+    use nexus::engines::google_wml::parse_google_wml_html;
+
+    let captcha_html = r#"<html><body><form id="captcha-form"></form></body></html>"#;
+    assert!(parse_google_wml_html(captcha_html).is_err());
+
+    let sorry_html = r#"<html><body>Please solve this /sorry/challenge</body></html>"#;
+    assert!(parse_google_wml_html(sorry_html).is_err());
+}

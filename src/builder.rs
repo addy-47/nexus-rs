@@ -6,7 +6,7 @@ use crate::error::NexusError;
 use crate::fetcher::{
     DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_TIMEOUT, DEFAULT_MAX_RESPONSE_BYTES, EgressFetcher,
 };
-use crate::model::Engine;
+use crate::model::{Engine, FanoutPolicy, RankingPolicy};
 use crate::pipeline::NexusSearch;
 use crate::traits::TextEmbedder;
 
@@ -14,6 +14,8 @@ use crate::traits::TextEmbedder;
 #[derive(Clone, Default)]
 pub struct NexusSearchBuilder {
     engines: Option<Vec<Engine>>,
+    fanout_policy: Option<FanoutPolicy>,
+    ranking_policy: Option<RankingPolicy>,
     embedder: Option<Arc<dyn TextEmbedder>>,
     fetch_concurrency: Option<usize>,
     fetch_timeout: Option<Duration>,
@@ -29,6 +31,18 @@ impl NexusSearchBuilder {
     /// Configures the list of search engines enabled for fanout queries.
     pub fn with_engines(mut self, engines: Vec<Engine>) -> Self {
         self.engines = Some(engines);
+        self
+    }
+
+    /// Sets the adaptive fanout and early-exit quorum policy.
+    pub fn with_fanout_policy(mut self, policy: FanoutPolicy) -> Self {
+        self.fanout_policy = Some(policy);
+        self
+    }
+
+    /// Sets the passage relevance scoring and 2-stage re-ranking policy.
+    pub fn with_ranking_policy(mut self, policy: RankingPolicy) -> Self {
+        self.ranking_policy = Some(policy);
         self
     }
 
@@ -82,8 +96,11 @@ impl NexusSearchBuilder {
             ));
         }
 
+        let fanout_policy = self.fanout_policy.unwrap_or_default();
+        let ranking_policy = self.ranking_policy.unwrap_or_default();
+
         let fanout = match self.engines {
-            Some(engines) => EngineFanout::new(engines),
+            Some(engines) => EngineFanout::new(engines, fanout_policy),
             None => EngineFanout::default(),
         };
 
@@ -100,6 +117,7 @@ impl NexusSearchBuilder {
             fetcher,
             self.embedder,
             concurrency,
+            ranking_policy,
         ))
     }
 }

@@ -42,10 +42,21 @@ pub fn canonicalize_url(raw_url: &str) -> String {
         .filter(|(k, _)| {
             let key = k.to_ascii_lowercase();
             !key.starts_with("utm_")
-                && key != "ref"
-                && key != "fbclid"
-                && key != "gclid"
-                && key != "mc_eid"
+                && !matches!(
+                    key.as_str(),
+                    "ref"
+                        | "fbclid"
+                        | "gclid"
+                        | "dclid"
+                        | "msclkid"
+                        | "msockid"
+                        | "mc_cid"
+                        | "mc_eid"
+                        | "igshid"
+                        | "ref_src"
+                        | "_ga"
+                        | "_gl"
+                )
         })
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
@@ -63,6 +74,66 @@ pub fn canonicalize_url(raw_url: &str) -> String {
     }
 
     parsed.into()
+}
+
+/// Normalizes a URL into a canonical key for cross-engine consensus corroboration.
+pub fn norm_url_key(raw_url: &str) -> String {
+    let Ok(u) = Url::parse(raw_url) else {
+        return raw_url.trim().to_lowercase();
+    };
+    let host = u
+        .host_str()
+        .unwrap_or("")
+        .trim_start_matches("www.")
+        .to_lowercase();
+    let path = u
+        .path()
+        .trim_end_matches('/')
+        .trim_end_matches("/index.html")
+        .trim_end_matches("/index.htm")
+        .to_lowercase();
+    let query = u
+        .query()
+        .map(|q| {
+            let kept: Vec<_> = q
+                .split('&')
+                .filter(|pair| {
+                    let mut parts = pair.splitn(2, '=');
+                    let key = parts.next().unwrap_or("").to_ascii_lowercase();
+                    !key.starts_with("utm_")
+                        && !matches!(
+                            key.as_str(),
+                            "ref"
+                                | "fbclid"
+                                | "gclid"
+                                | "dclid"
+                                | "msclkid"
+                                | "msockid"
+                                | "mc_cid"
+                                | "mc_eid"
+                                | "igshid"
+                                | "ref_src"
+                                | "_ga"
+                                | "_gl"
+                        )
+                })
+                .collect();
+            if kept.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", kept.join("&"))
+            }
+        })
+        .unwrap_or_default();
+    format!("{host}{path}{query}")
+}
+
+/// Extracts a normalized base domain string from a raw URL for domain diversity checking.
+pub fn extract_domain(raw_url: &str) -> String {
+    Url::parse(raw_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_lowercase()))
+        .unwrap_or_default()
 }
 
 pub const MAX_SERP_BYTES: usize = 2 * 1024 * 1024; // 2 MB SERP ceiling

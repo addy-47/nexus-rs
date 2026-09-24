@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nexus::chunking::chunk_pages;
+use nexus::model::RankingPolicy;
 use nexus::ranking::bm25::rank_bm25;
 use nexus::ranking::dense::{cosine_similarity, rank_dense};
 use nexus::ranking::hybrid::rank_hybrid;
@@ -203,9 +204,15 @@ async fn test_hybrid_rrf_scoring_math() {
             },
         ];
 
-        rank_hybrid("rust compiler", &mut passages, &embedder)
-            .await
-            .unwrap();
+        rank_hybrid(
+            "rust compiler",
+            &mut passages,
+            &embedder,
+            &RankingPolicy::default(),
+            None,
+        )
+        .await
+        .unwrap();
 
         // For passage 0 ("Rust"):
         // Sparse Rank: 1 (matches both terms) -> 1 / (60 + 1) = 1/61
@@ -289,9 +296,15 @@ async fn test_hybrid_rrf_handles_duplicate_metadata_without_aliasing() {
             },
         ];
 
-        rank_hybrid("rust compiler", &mut passages, &embedder)
-            .await
-            .unwrap();
+        rank_hybrid(
+            "rust compiler",
+            &mut passages,
+            &embedder,
+            &RankingPolicy::default(),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(passages.len(), 2);
         assert!(passages[0].text.contains("Rust"));

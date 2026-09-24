@@ -15,6 +15,10 @@ pub enum Engine {
     Yahoo,
     /// Mojeek HTML search.
     Mojeek,
+    /// Google mobile no-JS WML search.
+    GoogleWml,
+    /// Brave search.
+    Brave,
 }
 
 /// Scoring strategy used to rank retrieved passages.
@@ -208,6 +212,51 @@ pub struct NexusSearchOptions {
     pub max_response_bytes: usize,
 }
 
+/// Adaptive multi-engine fanout and early-exit quorum policy.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct FanoutPolicy {
+    /// Minimum count of search engines that must respond before considering early exit.
+    pub min_reporting_engines: usize,
+    /// Minimum distinct domain count across aggregated candidate URLs.
+    pub min_distinct_domains: usize,
+    /// Minimum total deduplicated candidate URLs before early exit is permitted.
+    pub min_candidate_hits: usize,
+    /// Maximum time budget for the entire fanout wave in milliseconds.
+    pub max_fanout_deadline_ms: u64,
+}
+
+impl Default for FanoutPolicy {
+    fn default() -> Self {
+        Self {
+            min_reporting_engines: 2,
+            min_distinct_domains: 3,
+            min_candidate_hits: 8,
+            max_fanout_deadline_ms: 1200,
+        }
+    }
+}
+
+/// Relevance scoring and 2-stage re-ranking policy.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RankingPolicy {
+    /// Whether to prune candidates via fast BM25 before executing neural dense embedding.
+    pub two_stage_reranking: bool,
+    /// Maximum candidate passages to evaluate during neural dense embedding (stage 2).
+    pub max_candidates_to_rerank: usize,
+    /// Score multiplier for passages whose source URL was corroborated by >= 2 distinct engine families.
+    pub consensus_multiplier: f32,
+}
+
+impl Default for RankingPolicy {
+    fn default() -> Self {
+        Self {
+            two_stage_reranking: true,
+            max_candidates_to_rerank: 10,
+            consensus_multiplier: 1.5,
+        }
+    }
+}
+
 impl fmt::Display for Engine {
     /// Formats the search engine name as lowercase string slice.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -216,6 +265,8 @@ impl fmt::Display for Engine {
             Self::Bing => write!(f, "bing"),
             Self::Yahoo => write!(f, "yahoo"),
             Self::Mojeek => write!(f, "mojeek"),
+            Self::GoogleWml => write!(f, "google_wml"),
+            Self::Brave => write!(f, "brave"),
         }
     }
 }
@@ -243,6 +294,18 @@ impl Engine {
             Self::Bing => "bing",
             Self::Yahoo => "yahoo",
             Self::Mojeek => "mojeek",
+            Self::GoogleWml => "google_wml",
+            Self::Brave => "brave",
+        }
+    }
+
+    /// Returns the underlying web crawl / index family for consensus corroboration.
+    pub const fn index_family(self) -> &'static str {
+        match self {
+            Self::Duckduckgo | Self::Bing | Self::Yahoo => "bing",
+            Self::Mojeek => "mojeek",
+            Self::GoogleWml => "google",
+            Self::Brave => "brave",
         }
     }
 }

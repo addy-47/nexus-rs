@@ -7,8 +7,8 @@ use crate::error::NexusError;
 use crate::extraction;
 use crate::fetcher::EgressFetcher;
 use crate::model::{
-    NexusSearchOptions, NexusSearchResult, NexusSearchMetrics, PageFetchMetrics, RawPage,
-    ScoredPassage,
+    NexusSearchMetrics, NexusSearchOptions, NexusSearchResult, PageFetchMetrics, RankingPolicy,
+    RawPage, ScoredPassage,
 };
 use crate::ranking;
 use crate::traits::TextEmbedder;
@@ -20,6 +20,7 @@ pub struct NexusSearch {
     fetcher: EgressFetcher,
     embedder: Option<Arc<dyn TextEmbedder>>,
     fetch_concurrency: usize,
+    ranking_policy: RankingPolicy,
 }
 
 impl NexusSearch {
@@ -34,12 +35,14 @@ impl NexusSearch {
         fetcher: EgressFetcher,
         embedder: Option<Arc<dyn TextEmbedder>>,
         fetch_concurrency: usize,
+        ranking_policy: RankingPolicy,
     ) -> Self {
         Self {
             fanout,
             fetcher,
             embedder,
             fetch_concurrency,
+            ranking_policy,
         }
     }
 
@@ -105,7 +108,12 @@ impl NexusSearch {
             self.fetch_and_extract_pages(&candidate_urls, options).await;
 
         let (passages, chunking_total_ms, ranking_outcome) = self
-            .chunk_and_rank_passages(trimmed_query, &raw_pages, options)
+            .chunk_and_rank_passages(
+                trimmed_query,
+                &raw_pages,
+                options,
+                Some(&fanout_outcome.consensus_urls),
+            )
             .await?;
 
         let total_pipeline_ms = start_time.elapsed().as_millis() as u64;
@@ -230,6 +238,7 @@ impl NexusSearch {
         query: &str,
         raw_pages: &[RawPage],
         options: &NexusSearchOptions,
+        consensus_urls: Option<&std::collections::HashSet<String>>,
     ) -> Result<(Vec<ScoredPassage>, u64, ranking::RankingMetricsOutcome), NexusError> {
         let chunk_start = std::time::Instant::now();
         let mut passages = chunking::chunk_pages(
@@ -240,8 +249,15 @@ impl NexusSearch {
         let chunking_total_ms = chunk_start.elapsed().as_millis() as u64;
 
         let embedder_ref = self.embedder.as_ref().map(|arc| arc.as_ref());
-        let ranking_outcome =
-            ranking::rank_passages(query, &mut passages, options.ranking_mode, embedder_ref).await?;
+        let ranking_outcome = ranking::rank_passages(
+            query,
+            &mut passages,
+            options.ranking_mode,
+            embedder_ref,
+            &self.ranking_policy,
+            consensus_urls,
+        )
+        .await?;
 
         Ok((passages, chunking_total_ms, ranking_outcome))
     }
