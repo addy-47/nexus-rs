@@ -82,6 +82,20 @@ async fn test_ssrf_rejects_ipv6_private_and_mapped_ranges() {
             "0:0:0:0:0:ffff:a9fe:a9fe".parse().unwrap(),
             // IPv4-mapped private 10.0.0.1 (::ffff:10.0.0.1)
             "0:0:0:0:0:ffff:0a00:0001".parse().unwrap(),
+            // NAT64 Well-Known (64:ff9b::/96)
+            "64:ff9b::192.0.2.1".parse().unwrap(),
+            // NAT64 Local-Use (64:ff9b:1::/48)
+            "64:ff9b:1::1".parse().unwrap(),
+            // Teredo tunneling (2001::/32)
+            "2001:0000:4136:e378:8000:63bf:3fff:fdd2".parse().unwrap(),
+            // Benchmarking (2001:2::/48)
+            "2001:2::1".parse().unwrap(),
+            // ORCHIDv2 (2001:20::/28)
+            "2001:20::1".parse().unwrap(),
+            // 6to4 tunneling (2002::/16)
+            "2002:c000:0201::1".parse().unwrap(),
+            // Deprecated Site-local (fec0::/10)
+            "fec0::1".parse().unwrap(),
         ];
 
         for ip in blocked_ipv6 {

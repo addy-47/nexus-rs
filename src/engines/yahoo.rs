@@ -1,7 +1,7 @@
 use scraper::{ElementRef, Html, Selector};
 use url::Url;
 
-use super::helpers::{cached_selector, element_text};
+use super::helpers::{cached_selector, element_text, read_serp_html};
 use crate::error::NexusError;
 use crate::model::{Engine, EngineHit, TimeFilter};
 
@@ -30,10 +30,7 @@ pub async fn query_yahoo(
         )));
     }
 
-    let html = response
-        .text()
-        .await
-        .map_err(|e| NexusError::ScraperTransport(format!("Yahoo body read failed: {e}")))?;
+    let html = read_serp_html(response, "Yahoo").await?;
 
     parse_yahoo_html(&html)
 }

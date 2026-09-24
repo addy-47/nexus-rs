@@ -1,6 +1,6 @@
 use scraper::Html;
 
-use super::helpers::{cached_selector, element_text};
+use super::helpers::{cached_selector, element_text, read_serp_html};
 use crate::error::NexusError;
 use crate::model::{Engine, EngineHit};
 
@@ -23,10 +23,7 @@ pub async fn query_mojeek(
         )));
     }
 
-    let html = response
-        .text()
-        .await
-        .map_err(|e| NexusError::ScraperTransport(format!("Mojeek body read failed: {e}")))?;
+    let html = read_serp_html(response, "Mojeek").await?;
 
     parse_mojeek_html(&html)
 }
@@ -53,7 +50,12 @@ pub fn parse_mojeek_html(html: &str) -> Result<Vec<EngineHit>, NexusError> {
             continue;
         };
 
-        let target_url = link.value().attr("href").unwrap_or_default().trim().to_owned();
+        let target_url = link
+            .value()
+            .attr("href")
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
         if target_url.is_empty() {
             continue;
         }

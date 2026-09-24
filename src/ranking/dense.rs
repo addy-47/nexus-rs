@@ -2,6 +2,49 @@ use crate::error::NexusError;
 use crate::model::ScoredPassage;
 use crate::traits::TextEmbedder;
 
+/// Computes dense cosine similarity scores for passages against the query in input order.
+pub async fn score_dense(
+    query: &str,
+    passages: &[ScoredPassage],
+    embedder: &dyn TextEmbedder,
+) -> Result<Vec<f32>, NexusError> {
+    if passages.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let query_vector = embedder.embed_text(query).await?;
+    if query_vector.is_empty() || query_vector.iter().any(|v| !v.is_finite()) {
+        return Err(NexusError::Embedding(
+            "Query embedding returned empty or non-finite vector".to_owned(),
+        ));
+    }
+
+    let texts: Vec<&str> = passages.iter().map(|p| p.text.as_str()).collect();
+    let doc_vectors = embedder.embed_batch(&texts).await?;
+
+    if doc_vectors.len() != passages.len() {
+        return Err(NexusError::Embedding(format!(
+            "embed_batch returned {} vectors for {} passages",
+            doc_vectors.len(),
+            passages.len()
+        )));
+    }
+
+    let mut scores = Vec::with_capacity(passages.len());
+    for (idx, doc_vector) in doc_vectors.iter().enumerate() {
+        if doc_vector.is_empty() || doc_vector.iter().any(|v| !v.is_finite()) {
+            return Err(NexusError::Embedding(format!(
+                "Passage {} embedding returned empty or non-finite vector",
+                idx
+            )));
+        }
+        let sim = cosine_similarity(&query_vector, doc_vector);
+        scores.push(sim);
+    }
+
+    Ok(scores)
+}
+
 /// Scores and ranks passage chunks using dense vector cosine similarity.
 pub async fn rank_dense(
     query: &str,
@@ -12,16 +55,9 @@ pub async fn rank_dense(
         return Ok(());
     }
 
-    let query_vector = embedder.embed_text(query).await?;
-    let texts: Vec<&str> = passages.iter().map(|p| p.text.as_str()).collect();
-    let doc_vectors = embedder.embed_batch(&texts).await?;
-
+    let scores = score_dense(query, passages, embedder).await?;
     for (idx, passage) in passages.iter_mut().enumerate() {
-        let sim = if let Some(doc_vector) = doc_vectors.get(idx) {
-            cosine_similarity(&query_vector, doc_vector)
-        } else {
-            0.0
-        };
+        let sim = scores[idx];
         passage.dense_score = Some(sim);
         passage.score = sim;
     }

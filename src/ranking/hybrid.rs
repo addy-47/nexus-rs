@@ -1,5 +1,5 @@
-use super::bm25::rank_bm25;
-use super::dense::rank_dense;
+use super::bm25::score_bm25;
+use super::dense::score_dense;
 use crate::error::NexusError;
 use crate::model::ScoredPassage;
 use crate::traits::TextEmbedder;
@@ -18,55 +18,39 @@ pub async fn rank_hybrid(
 
     let n = passages.len();
 
-    // 1. Sparse ranking pass
-    let sparse_passages: Vec<(usize, ScoredPassage)> =
-        passages.iter().cloned().enumerate().collect();
-    let mut sparse_inner: Vec<ScoredPassage> =
-        sparse_passages.iter().map(|(_, p)| p.clone()).collect();
-    rank_bm25(query, &mut sparse_inner);
+    // 1. Compute sparse BM25 scores in input order
+    let sparse_scores = score_bm25(query, passages);
 
-    let mut sparse_ranks = vec![0usize; n];
-    let mut sparse_scores = vec![0.0f32; n];
-    for (rank, p) in sparse_inner.into_iter().enumerate() {
-        if let Some((orig_idx, _)) = sparse_passages
-            .iter()
-            .find(|(_, orig)| orig.passage_index == p.passage_index && orig.source_url == p.source_url)
-        {
-            sparse_ranks[*orig_idx] = rank + 1;
-            sparse_scores[*orig_idx] = p.sparse_score.unwrap_or(0.0);
-        }
-    }
+    // 2. Compute dense cosine similarity scores in input order
+    let dense_scores = score_dense(query, passages, embedder).await?;
 
-    // 2. Dense ranking pass
-    let dense_passages: Vec<(usize, ScoredPassage)> =
-        passages.iter().cloned().enumerate().collect();
-    let mut dense_inner: Vec<ScoredPassage> =
-        dense_passages.iter().map(|(_, p)| p.clone()).collect();
-    rank_dense(query, &mut dense_inner, embedder).await?;
+    // 3. Compute 1-based ranks from scores in O(n log n)
+    let sparse_ranks = compute_ranks(&sparse_scores);
+    let dense_ranks = compute_ranks(&dense_scores);
 
-    let mut dense_ranks = vec![0usize; n];
-    let mut dense_scores = vec![0.0f32; n];
-    for (rank, p) in dense_inner.into_iter().enumerate() {
-        if let Some((orig_idx, _)) = dense_passages
-            .iter()
-            .find(|(_, orig)| orig.passage_index == p.passage_index && orig.source_url == p.source_url)
-        {
-            dense_ranks[*orig_idx] = rank + 1;
-            dense_scores[*orig_idx] = p.dense_score.unwrap_or(0.0);
-        }
-    }
-
-    // 3. Compute RRF scores
-    for (idx, passage) in passages.iter_mut().enumerate() {
+    // 4. Compute RRF scores directly into passages without cloning or metadata searching
+    for idx in 0..n {
         let s_rank = sparse_ranks[idx] as f32;
         let d_rank = dense_ranks[idx] as f32;
 
         let rrf = (1.0 / (RRF_K + s_rank)) + (1.0 / (RRF_K + d_rank));
-        passage.sparse_score = Some(sparse_scores[idx]);
-        passage.dense_score = Some(dense_scores[idx]);
-        passage.score = rrf;
+        passages[idx].sparse_score = Some(sparse_scores[idx]);
+        passages[idx].dense_score = Some(dense_scores[idx]);
+        passages[idx].score = rrf;
     }
 
     passages.sort_by(|a, b| b.score.total_cmp(&a.score));
     Ok(())
+}
+
+/// Converts a slice of scores into 1-based ranks (1 = highest score).
+fn compute_ranks(scores: &[f32]) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..scores.len()).collect();
+    indices.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
+
+    let mut ranks = vec![0usize; scores.len()];
+    for (rank_0, &orig_idx) in indices.iter().enumerate() {
+        ranks[orig_idx] = rank_0 + 1;
+    }
+    ranks
 }

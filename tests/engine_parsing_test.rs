@@ -121,7 +121,11 @@ async fn test_mojeek_serp_parsing() {
         assert_eq!(hits[0].engine, Engine::Mojeek);
         assert_eq!(hits[0].title, "Install Rust with rustup");
         assert_eq!(hits[0].url, "https://rustup.rs");
-        assert!(hits[0].snippet.contains("install and manage Rust toolchains"));
+        assert!(
+            hits[0]
+                .snippet
+                .contains("install and manage Rust toolchains")
+        );
     })
     .await
     .expect("test timed out");
@@ -138,7 +142,10 @@ async fn test_canonicalize_url_strips_tracking_params_and_fragments() {
 
         assert_eq!(canonical1, "https://example.com/article");
         assert_eq!(canonical2, "https://example.com/article");
-        assert_eq!(canonical1, canonical2, "Both URLs must normalize to identical canonical form");
+        assert_eq!(
+            canonical1, canonical2,
+            "Both URLs must normalize to identical canonical form"
+        );
     })
     .await
     .expect("test timed out");

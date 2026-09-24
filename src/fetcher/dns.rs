@@ -96,6 +96,11 @@ fn is_safe_ipv6(ip: &Ipv6Addr) -> bool {
         return false;
     }
 
+    // Deprecated Site-local (fec0::/10)
+    if (segments[0] & 0xFFC0) == 0xFEC0 {
+        return false;
+    }
+
     // Discard-only prefix (100::/64)
     if segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0 {
         return false;
@@ -103,6 +108,42 @@ fn is_safe_ipv6(ip: &Ipv6Addr) -> bool {
 
     // Documentation prefix (2001:db8::/32)
     if segments[0] == 0x2001 && segments[1] == 0x0DB8 {
+        return false;
+    }
+
+    // NAT64 Well-Known prefix (64:ff9b::/96)
+    if segments[0] == 0x0064
+        && segments[1] == 0xFF9B
+        && segments[2] == 0
+        && segments[3] == 0
+        && segments[4] == 0
+        && segments[5] == 0
+    {
+        return false;
+    }
+
+    // Local-Use IPv4/IPv6 Translation prefix (64:ff9b:1::/48)
+    if segments[0] == 0x0064 && segments[1] == 0xFF9B && segments[2] == 0x0001 {
+        return false;
+    }
+
+    // Teredo tunneling (2001::/32)
+    if segments[0] == 0x2001 && segments[1] == 0x0000 {
+        return false;
+    }
+
+    // Benchmarking (2001:2::/48)
+    if segments[0] == 0x2001 && segments[1] == 0x0002 {
+        return false;
+    }
+
+    // ORCHIDv2 (2001:20::/28)
+    if segments[0] == 0x2001 && (segments[1] & 0xFFF0) == 0x0020 {
+        return false;
+    }
+
+    // 6to4 tunneling (2002::/16)
+    if segments[0] == 0x2002 {
         return false;
     }
 
@@ -141,7 +182,9 @@ pub async fn resolve_and_validate_host(
     for socket_addr in &resolved {
         let ip = socket_addr.ip();
         if !is_safe_public_ip(&ip) {
-            log::warn!("[Nexus::Egress] Blocked SSRF attempt to non-public IP: {ip} for host: {host}");
+            log::warn!(
+                "[Nexus::Egress] Blocked SSRF attempt to non-public IP: {ip} for host: {host}"
+            );
             return Err(NexusError::PrivateIpBlocked(ip));
         }
     }

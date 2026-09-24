@@ -58,6 +58,30 @@ impl NexusSearchBuilder {
 
     /// Validates configuration and constructs the finalized NexusSearch instance.
     pub fn build(self) -> Result<NexusSearch, NexusError> {
+        if let Some(ref engines) = self.engines
+            && engines.is_empty()
+        {
+            return Err(NexusError::InvalidConfiguration(
+                "Engine list cannot be empty when explicitly configured".to_owned(),
+            ));
+        }
+
+        if let Some(timeout) = self.fetch_timeout
+            && timeout.is_zero()
+        {
+            return Err(NexusError::InvalidConfiguration(
+                "fetch_timeout cannot be zero".to_owned(),
+            ));
+        }
+
+        if let Some(bytes) = self.max_response_bytes
+            && bytes == 0
+        {
+            return Err(NexusError::InvalidConfiguration(
+                "max_response_bytes cannot be zero".to_owned(),
+            ));
+        }
+
         let fanout = match self.engines {
             Some(engines) => EngineFanout::new(engines),
             None => EngineFanout::default(),
@@ -65,7 +89,8 @@ impl NexusSearchBuilder {
 
         let fetcher = EgressFetcher::new(
             self.fetch_timeout.unwrap_or(DEFAULT_FETCH_TIMEOUT),
-            self.max_response_bytes.unwrap_or(DEFAULT_MAX_RESPONSE_BYTES),
+            self.max_response_bytes
+                .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES),
         );
 
         let concurrency = self.fetch_concurrency.unwrap_or(DEFAULT_FETCH_CONCURRENCY);

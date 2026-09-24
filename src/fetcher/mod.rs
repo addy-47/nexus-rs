@@ -11,7 +11,7 @@ pub mod connector;
 pub mod dns;
 pub mod redirect;
 
-pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 524_288; // 512 KB
+pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 512_000;
 pub const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_millis(4000);
 pub const DEFAULT_FETCH_CONCURRENCY: usize = 3;
 
@@ -41,8 +41,17 @@ impl EgressFetcher {
         }
     }
 
+    /// Returns a new EgressFetcher instance configured with overriding limits.
+    pub fn with_limits(&self, timeout: Duration, max_response_bytes: usize) -> Self {
+        Self {
+            timeout,
+            max_response_bytes,
+        }
+    }
+
     /// Fetches a single page by URL, applying full SSRF and redirect validation.
-    pub async fn fetch_page(&self, url: &str) -> Result<String, NexusError> {
+    /// Returns `(final_url, body_content)`.
+    pub async fn fetch_page(&self, url: &str) -> Result<(String, String), NexusError> {
         redirect::fetch_with_redirect_vetting(url, self.timeout, self.max_response_bytes).await
     }
 
@@ -51,7 +60,7 @@ impl EgressFetcher {
         &self,
         urls: &[String],
         concurrency: usize,
-    ) -> Vec<(String, Result<String, NexusError>)> {
+    ) -> Vec<(String, Result<(String, String), NexusError>)> {
         let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
         let mut futures = FuturesOrdered::new();
 

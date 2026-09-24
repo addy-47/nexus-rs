@@ -1,7 +1,7 @@
 use scraper::Html;
 use url::Url;
 
-use super::helpers::{cached_selector, element_text};
+use super::helpers::{cached_selector, element_text, read_serp_html};
 use crate::error::NexusError;
 use crate::model::{Engine, EngineHit, TimeFilter};
 
@@ -39,10 +39,7 @@ pub async fn query_duckduckgo(
         )));
     }
 
-    let html = response
-        .text()
-        .await
-        .map_err(|e| NexusError::ScraperTransport(format!("DuckDuckGo body read failed: {e}")))?;
+    let html = read_serp_html(response, "DuckDuckGo").await?;
 
     parse_duckduckgo_html(&html)
 }
@@ -51,7 +48,8 @@ pub async fn query_duckduckgo(
 pub fn parse_duckduckgo_html(html: &str) -> Result<Vec<EngineHit>, NexusError> {
     let doc = Html::parse_document(html);
 
-    let challenge_sel = cached_selector("form#challenge-form, form[action*='anomaly.js'], .anomaly-modal");
+    let challenge_sel =
+        cached_selector("form#challenge-form, form[action*='anomaly.js'], .anomaly-modal");
     if doc.select(&challenge_sel).next().is_some() {
         return Err(NexusError::SerpParse {
             engine: "duckduckgo".to_string(),

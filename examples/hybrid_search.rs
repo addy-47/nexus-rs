@@ -69,7 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("Executing hybrid RRF search for 'high performance rust async'...");
-    let result = engine.search("high performance rust async", &options).await?;
+    let result = engine
+        .search("high performance rust async", &options)
+        .await?;
 
     println!("\nTop 5 Scored Passages (Hybrid RRF):");
     for (i, passage) in result.scored_passages.iter().take(5).enumerate() {

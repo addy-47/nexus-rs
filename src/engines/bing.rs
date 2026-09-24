@@ -4,7 +4,7 @@ use base64::Engine as _;
 use scraper::Html;
 use url::Url;
 
-use super::helpers::{cached_selector, element_text};
+use super::helpers::{cached_selector, element_text, read_serp_html};
 use crate::error::NexusError;
 use crate::model::{Engine, EngineHit};
 
@@ -30,10 +30,7 @@ pub async fn query_bing(client: &primp::Client, query: &str) -> Result<Vec<Engin
         )));
     }
 
-    let html = response
-        .text()
-        .await
-        .map_err(|e| NexusError::ScraperTransport(format!("Bing body read failed: {e}")))?;
+    let html = read_serp_html(response, "Bing").await?;
 
     parse_bing_html(&html)
 }

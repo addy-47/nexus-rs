@@ -29,55 +29,56 @@ impl Default for EngineFanout {
 impl EngineFanout {
     /// Constructs a fanout orchestrator with caller-selected search engines.
     pub fn new(engines: Vec<Engine>) -> Self {
-        let valid_engines = if engines.is_empty() {
-            vec![Engine::Duckduckgo, Engine::Bing, Engine::Yahoo]
-        } else {
-            engines
-        };
-        Self {
-            engines: valid_engines,
-        }
+        Self { engines }
     }
 
     /// Queries all enabled engines concurrently and returns deduplicated hits.
-    pub async fn query_all(&self, query: &str, time_filter: TimeFilter) -> Vec<EngineHit> {
-        let client = match build_tls_client() {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("[Nexus::Engines] Failed to build TLS impersonation client: {e}");
-                return Vec::new();
-            }
-        };
+    pub async fn query_all(
+        &self,
+        query: &str,
+        time_filter: TimeFilter,
+    ) -> Result<Vec<EngineHit>, NexusError> {
+        if self.engines.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        let mut tasks = Vec::with_capacity(self.engines.len());
-        for &engine in &self.engines {
+        let client = build_tls_client()?;
+
+        let tasks = self.engines.iter().map(|&engine| {
             let client_ref = client.clone();
             let q = query.to_owned();
-            tasks.push(tokio::spawn(async move {
-                dispatch_engine_query(&client_ref, engine, &q, time_filter).await
-            }));
-        }
+            async move {
+                (
+                    engine,
+                    dispatch_engine_query(&client_ref, engine, &q, time_filter).await,
+                )
+            }
+        });
 
         let task_results = join_all(tasks).await;
         let mut all_hits = Vec::new();
+        let mut successful_queries = 0usize;
 
-        for (idx, res) in task_results.into_iter().enumerate() {
-            let engine = self.engines[idx];
+        for (engine, res) in task_results {
             match res {
-                Ok(Ok(hits)) => {
+                Ok(hits) => {
+                    successful_queries += 1;
                     log::info!("[Nexus::Engines] {engine} yielded {} hits", hits.len());
                     all_hits.push(hits);
                 }
-                Ok(Err(e)) => {
+                Err(e) => {
                     log::warn!("[Nexus::Engines] {engine} query error: {e}");
-                }
-                Err(join_err) => {
-                    log::warn!("[Nexus::Engines] {engine} task panic/cancel: {join_err}");
                 }
             }
         }
 
-        interleave_and_deduplicate(all_hits)
+        if successful_queries == 0 && !self.engines.is_empty() {
+            return Err(NexusError::AllProvidersFailed {
+                attempted: self.engines.len(),
+            });
+        }
+
+        Ok(interleave_and_deduplicate(all_hits))
     }
 }
 
@@ -119,9 +120,15 @@ fn interleave_and_deduplicate(engine_batches: Vec<Vec<EngineHit>>) -> Vec<Engine
 /// Builds a primp client with randomized TLS browser fingerprint impersonation.
 fn build_tls_client() -> Result<primp::Client, NexusError> {
     let profiles = [
-        (primp::Impersonate::ChromeV146, primp::ImpersonateOS::Windows),
+        (
+            primp::Impersonate::ChromeV146,
+            primp::ImpersonateOS::Windows,
+        ),
         (primp::Impersonate::ChromeV146, primp::ImpersonateOS::MacOS),
-        (primp::Impersonate::FirefoxV146, primp::ImpersonateOS::Windows),
+        (
+            primp::Impersonate::FirefoxV146,
+            primp::ImpersonateOS::Windows,
+        ),
     ];
     let pick = rand::random_range(0..profiles.len());
     let (browser, os) = profiles[pick];

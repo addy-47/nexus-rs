@@ -114,7 +114,8 @@ async fn test_bm25_ranking_ranks_relevant_passage_highest() {
                 dense_score: None,
             },
             ScoredPassage {
-                text: "Rust memory safety eliminates data races and use-after-free bugs.".to_string(),
+                text: "Rust memory safety eliminates data races and use-after-free bugs."
+                    .to_string(),
                 source_url: "url2".to_string(),
                 source_title: "Rust Safety".to_string(),
                 passage_index: 1,
@@ -123,7 +124,8 @@ async fn test_bm25_ranking_ranks_relevant_passage_highest() {
                 dense_score: None,
             },
             ScoredPassage {
-                text: "Cooking Italian pasta requires salted boiling water and semolina flour.".to_string(),
+                text: "Cooking Italian pasta requires salted boiling water and semolina flour."
+                    .to_string(),
                 source_url: "url3".to_string(),
                 source_title: "Cooking".to_string(),
                 passage_index: 2,
@@ -260,4 +262,135 @@ async fn test_dense_ranking_scores_and_sorts_by_cosine_similarity() {
     })
     .await
     .expect("test timed out");
+}
+
+#[tokio::test]
+async fn test_hybrid_rrf_handles_duplicate_metadata_without_aliasing() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let embedder = DeterministicMockEmbedder;
+        let mut passages = vec![
+            ScoredPassage {
+                text: "Rust memory safety compiler borrow checker.".to_string(),
+                source_url: "https://example.com/same".to_string(),
+                source_title: "Same Page".to_string(),
+                passage_index: 0,
+                score: 0.0,
+                sparse_score: None,
+                dense_score: None,
+            },
+            ScoredPassage {
+                text: "Python dynamic runtime interpreter.".to_string(),
+                source_url: "https://example.com/same".to_string(),
+                source_title: "Same Page".to_string(),
+                passage_index: 0,
+                score: 0.0,
+                sparse_score: None,
+                dense_score: None,
+            },
+        ];
+
+        rank_hybrid("rust compiler", &mut passages, &embedder)
+            .await
+            .unwrap();
+
+        assert_eq!(passages.len(), 2);
+        assert!(passages[0].text.contains("Rust"));
+        assert!(passages[1].text.contains("Python"));
+        assert!(passages[0].score > passages[1].score);
+        assert!(passages[0].score > 0.0);
+        assert!(passages[1].score > 0.0);
+        assert_ne!(passages[0].score, passages[1].score);
+    })
+    .await
+    .expect("test timed out");
+}
+
+struct FlawedEmbedder {
+    short_batch: bool,
+    nan_vector: bool,
+}
+
+#[async_trait::async_trait]
+impl TextEmbedder for FlawedEmbedder {
+    async fn embed_text(&self, _text: &str) -> Result<Vec<f32>, NexusError> {
+        if self.nan_vector {
+            Ok(vec![f32::NAN, 0.0, 0.0])
+        } else {
+            Ok(vec![1.0, 0.0, 0.0])
+        }
+    }
+
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, NexusError> {
+        if self.short_batch {
+            Ok(vec![vec![1.0, 0.0, 0.0]]) // Returns 1 vector even if texts has 2
+        } else if self.nan_vector {
+            Ok(vec![vec![f32::NAN, 0.0, 0.0]; texts.len()])
+        } else {
+            Ok(vec![vec![1.0, 0.0, 0.0]; texts.len()])
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_dense_ranking_enforces_embedder_batch_and_value_contracts() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let short_embedder = FlawedEmbedder {
+            short_batch: true,
+            nan_vector: false,
+        };
+        let mut passages = vec![
+            ScoredPassage {
+                text: "Passage 1".to_string(),
+                source_url: "url1".to_string(),
+                source_title: "Title 1".to_string(),
+                passage_index: 0,
+                score: 0.0,
+                sparse_score: None,
+                dense_score: None,
+            },
+            ScoredPassage {
+                text: "Passage 2".to_string(),
+                source_url: "url2".to_string(),
+                source_title: "Title 2".to_string(),
+                passage_index: 1,
+                score: 0.0,
+                sparse_score: None,
+                dense_score: None,
+            },
+        ];
+
+        let result = rank_dense("query", &mut passages, &short_embedder).await;
+        assert!(matches!(result, Err(NexusError::Embedding(_))));
+
+        let nan_embedder = FlawedEmbedder {
+            short_batch: false,
+            nan_vector: true,
+        };
+        let nan_result = rank_dense("query", &mut passages, &nan_embedder).await;
+        assert!(matches!(nan_result, Err(NexusError::Embedding(_))));
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[test]
+fn test_builder_configuration_validation() {
+    let empty_engines_builder = nexus::NexusSearchBuilder::new().with_engines(Vec::new());
+    assert!(matches!(
+        empty_engines_builder.build(),
+        Err(NexusError::InvalidConfiguration(_))
+    ));
+
+    let zero_timeout_builder =
+        nexus::NexusSearchBuilder::new().with_fetch_timeout(Duration::from_millis(0));
+    assert!(matches!(
+        zero_timeout_builder.build(),
+        Err(NexusError::InvalidConfiguration(_))
+    ));
+
+    let zero_bytes_builder = nexus::NexusSearchBuilder::new().with_max_response_bytes(0);
+    assert!(matches!(
+        zero_bytes_builder.build(),
+        Err(NexusError::InvalidConfiguration(_))
+    ));
 }

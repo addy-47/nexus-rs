@@ -17,8 +17,24 @@ pub async fn read_bounded_body(
         .and_then(|val| val.to_str().ok())
         .map(str::to_owned);
 
+    let content_len = response.content_length();
+    if let Some(content_length) = content_len
+        && content_length as usize > max_response_bytes
+    {
+        log::warn!(
+            "[Nexus::Egress] Content-Length {content_length} exceeds limit of {max_response_bytes} for {url}"
+        );
+        return Err(NexusError::ResponseTooLarge {
+            limit_bytes: max_response_bytes,
+            url: url.to_owned(),
+        });
+    }
+
+    let initial_cap = content_len
+        .map(|cl| (cl as usize).min(max_response_bytes))
+        .unwrap_or(16 * 1024);
     let mut stream = response.bytes_stream();
-    let mut buffer = Vec::new();
+    let mut buffer = Vec::with_capacity(initial_cap);
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(NexusError::Http)?;

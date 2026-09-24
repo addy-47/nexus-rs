@@ -57,6 +57,31 @@ pub enum NexusError {
         message: String,
     },
 
+    /// HTTP response returned a non-success status code.
+    #[error("HTTP status {status} for URL: {url}")]
+    HttpStatus {
+        /// HTTP status code.
+        status: u16,
+        /// Request URL.
+        url: String,
+    },
+
+    /// All enabled search engine providers failed to return results.
+    #[error("All {attempted} search providers failed")]
+    AllProvidersFailed {
+        /// Number of providers attempted.
+        attempted: usize,
+    },
+
+    /// Request exceeded the overall deadline.
+    #[error("Operation timed out after {timeout_ms}ms for URL: {url}")]
+    Timeout {
+        /// Request URL.
+        url: String,
+        /// Timeout duration in milliseconds.
+        timeout_ms: u64,
+    },
+
     /// Downstream embedding generation failed.
     #[error("Text embedding failure: {0}")]
     Embedding(String),

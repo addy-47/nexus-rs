@@ -24,10 +24,10 @@ impl bm25::TokenEmbedder for RawTokenEmbedder {
     }
 }
 
-/// Scores and ranks passage chunks using lexical BM25.
-pub fn rank_bm25(query: &str, passages: &mut [ScoredPassage]) {
+/// Computes raw BM25 scores for passages in their input order.
+pub fn score_bm25(query: &str, passages: &[ScoredPassage]) -> Vec<f32> {
     if passages.is_empty() {
-        return;
+        return Vec::new();
     }
 
     let documents: Vec<String> = passages.iter().map(|p| p.text.to_lowercase()).collect();
@@ -48,8 +48,20 @@ pub fn rank_bm25(query: &str, passages: &mut [ScoredPassage]) {
 
     let query_embedding = embedder.embed(&query.to_lowercase());
 
+    (0..passages.len())
+        .map(|idx| scorer.score(&idx, &query_embedding).unwrap_or(0.0))
+        .collect()
+}
+
+/// Scores and ranks passage chunks using lexical BM25.
+pub fn rank_bm25(query: &str, passages: &mut [ScoredPassage]) {
+    if passages.is_empty() {
+        return;
+    }
+
+    let scores = score_bm25(query, passages);
     for (idx, passage) in passages.iter_mut().enumerate() {
-        let score = scorer.score(&idx, &query_embedding).unwrap_or(0.0);
+        let score = scores[idx];
         passage.sparse_score = Some(score);
         passage.score = score;
     }

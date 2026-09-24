@@ -64,3 +64,34 @@ pub fn canonicalize_url(raw_url: &str) -> String {
 
     parsed.into()
 }
+
+pub const MAX_SERP_BYTES: usize = 2 * 1024 * 1024; // 2 MB SERP ceiling
+
+/// Reads SERP response body and verifies that body does not exceed MAX_SERP_BYTES.
+pub async fn read_serp_html(
+    response: primp::Response,
+    engine_name: &'static str,
+) -> Result<String, crate::error::NexusError> {
+    if let Some(cl) = response.content_length()
+        && cl as usize > MAX_SERP_BYTES
+    {
+        return Err(crate::error::NexusError::ScraperTransport(format!(
+            "{engine_name} SERP response content-length {cl} exceeds maximum limit of {MAX_SERP_BYTES} bytes"
+        )));
+    }
+
+    let text = response.text().await.map_err(|e| {
+        crate::error::NexusError::ScraperTransport(format!(
+            "{engine_name} SERP body read failed: {e}"
+        ))
+    })?;
+
+    if text.len() > MAX_SERP_BYTES {
+        return Err(crate::error::NexusError::ScraperTransport(format!(
+            "{engine_name} SERP response body {} bytes exceeds maximum limit of {MAX_SERP_BYTES} bytes",
+            text.len()
+        )));
+    }
+
+    Ok(text)
+}

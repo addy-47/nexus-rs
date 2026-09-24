@@ -46,6 +46,7 @@ impl NexusSearch {
         query: &str,
         options: &NexusSearchOptions,
     ) -> Result<NexusSearchResult, NexusError> {
+        let start_time = std::time::Instant::now();
         let trimmed_query = query.trim();
         if trimmed_query.is_empty() {
             return Ok(NexusSearchResult {
@@ -54,9 +55,17 @@ impl NexusSearch {
             });
         }
 
-        let hits = self.fanout.query_all(trimmed_query, options.time_filter).await;
+        let hits = self
+            .fanout
+            .query_all(trimmed_query, options.time_filter)
+            .await?;
+
         if hits.is_empty() {
-            log::info!("[Nexus::Pipeline] Zero hits returned for query: '{trimmed_query}'");
+            log::info!(
+                "[Nexus::Pipeline] Zero provider hits returned (query_len={}, time_filter={:?})",
+                trimmed_query.len(),
+                options.time_filter
+            );
             return Ok(NexusSearchResult {
                 raw_pages: Vec::new(),
                 scored_passages: Vec::new(),
@@ -69,8 +78,17 @@ impl NexusSearch {
             .map(|h| h.url)
             .collect();
 
-        let raw_pages = self.fetch_and_extract_pages(&candidate_urls).await;
-        let passages = self.chunk_and_rank_passages(trimmed_query, &raw_pages, options).await?;
+        let raw_pages = self.fetch_and_extract_pages(&candidate_urls, options).await;
+        let passages = self
+            .chunk_and_rank_passages(trimmed_query, &raw_pages, options)
+            .await?;
+
+        log::info!(
+            "[Nexus::Pipeline] Search completed in {:?}: {} pages extracted, {} passages scored",
+            start_time.elapsed(),
+            raw_pages.len(),
+            passages.len()
+        );
 
         Ok(NexusSearchResult {
             raw_pages,
@@ -79,28 +97,36 @@ impl NexusSearch {
     }
 
     /// Fetches HTML from candidate URLs and normalizes content to Markdown.
-    async fn fetch_and_extract_pages(&self, urls: &[String]) -> Vec<RawPage> {
-        let fetch_results = self
-            .fetcher
+    async fn fetch_and_extract_pages(
+        &self,
+        urls: &[String],
+        options: &NexusSearchOptions,
+    ) -> Vec<RawPage> {
+        let fetcher = self.fetcher.with_limits(
+            std::time::Duration::from_millis(options.fetch_timeout_ms),
+            options.max_response_bytes,
+        );
+
+        let fetch_results = fetcher
             .fetch_all_concurrent(urls, self.fetch_concurrency)
             .await;
 
         let mut raw_pages = Vec::with_capacity(fetch_results.len());
-        for (url, res) in fetch_results {
+        for (requested_url, res) in fetch_results {
             match res {
-                Ok(html) if !html.trim().is_empty() => {
+                Ok((final_url, html)) if !html.trim().is_empty() => {
                     let page = extraction::extract_document(
-                        &url,
+                        &final_url,
                         &html,
                         extraction::DEFAULT_MAX_PAGE_CHARS,
                     );
                     raw_pages.push(page);
                 }
-                Ok(_) => {
-                    log::warn!("[Nexus::Pipeline] Empty HTML body fetched from {url}");
+                Ok((final_url, _)) => {
+                    log::warn!("[Nexus::Pipeline] Empty HTML body fetched from {final_url}");
                 }
                 Err(err) => {
-                    log::warn!("[Nexus::Pipeline] Page fetch failed for {url}: {err}");
+                    log::warn!("[Nexus::Pipeline] Page fetch failed for {requested_url}: {err}");
                 }
             }
         }

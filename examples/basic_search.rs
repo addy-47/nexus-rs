@@ -1,6 +1,4 @@
-use nexus::{
-    Engine, NexusSearch, NexusSearchOptions, RankingMode, TimeFilter,
-};
+use nexus::{Engine, NexusSearch, NexusSearchOptions, RankingMode, TimeFilter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,7 +20,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("Querying web search providers for 'rust 2024 edition features'...");
-    let result = engine.search("rust 2024 edition features", &options).await?;
+    let result = engine
+        .search("rust 2024 edition features", &options)
+        .await?;
 
     println!("\nFetched {} candidate web pages.", result.raw_pages.len());
     for page in &result.raw_pages {
