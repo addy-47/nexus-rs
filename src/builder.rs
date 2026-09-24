@@ -1,0 +1,80 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::engines::EngineFanout;
+use crate::error::NexusError;
+use crate::fetcher::{
+    DEFAULT_FETCH_CONCURRENCY, DEFAULT_FETCH_TIMEOUT, DEFAULT_MAX_RESPONSE_BYTES, EgressFetcher,
+};
+use crate::model::Engine;
+use crate::pipeline::NexusSearch;
+use crate::traits::TextEmbedder;
+
+/// Fluent builder for constructing a configured NexusSearch engine.
+#[derive(Clone, Default)]
+pub struct NexusSearchBuilder {
+    engines: Option<Vec<Engine>>,
+    embedder: Option<Arc<dyn TextEmbedder>>,
+    fetch_concurrency: Option<usize>,
+    fetch_timeout: Option<Duration>,
+    max_response_bytes: Option<usize>,
+}
+
+impl NexusSearchBuilder {
+    /// Creates an empty builder with standard defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Configures the list of search engines enabled for fanout queries.
+    pub fn with_engines(mut self, engines: Vec<Engine>) -> Self {
+        self.engines = Some(engines);
+        self
+    }
+
+    /// Attaches an embedding model implementation for dense and hybrid ranking.
+    pub fn with_embedder(mut self, embedder: Arc<dyn TextEmbedder>) -> Self {
+        self.embedder = Some(embedder);
+        self
+    }
+
+    /// Sets the maximum concurrent HTTP connections for downloading candidate pages.
+    pub fn with_fetch_concurrency(mut self, concurrency: usize) -> Self {
+        self.fetch_concurrency = Some(concurrency.max(1));
+        self
+    }
+
+    /// Sets the maximum time budget for fetching an individual candidate page.
+    pub fn with_fetch_timeout(mut self, timeout: Duration) -> Self {
+        self.fetch_timeout = Some(timeout);
+        self
+    }
+
+    /// Sets the byte threshold above which response streams are aborted.
+    pub fn with_max_response_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_response_bytes = Some(max_bytes);
+        self
+    }
+
+    /// Validates configuration and constructs the finalized NexusSearch instance.
+    pub fn build(self) -> Result<NexusSearch, NexusError> {
+        let fanout = match self.engines {
+            Some(engines) => EngineFanout::new(engines),
+            None => EngineFanout::default(),
+        };
+
+        let fetcher = EgressFetcher::new(
+            self.fetch_timeout.unwrap_or(DEFAULT_FETCH_TIMEOUT),
+            self.max_response_bytes.unwrap_or(DEFAULT_MAX_RESPONSE_BYTES),
+        );
+
+        let concurrency = self.fetch_concurrency.unwrap_or(DEFAULT_FETCH_CONCURRENCY);
+
+        Ok(NexusSearch::new(
+            fanout,
+            fetcher,
+            self.embedder,
+            concurrency,
+        ))
+    }
+}

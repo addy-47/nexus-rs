@@ -1,0 +1,39 @@
+[package]
+name = "nexus-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "High-performance, standalone search and retrieval engine for AI agents"
+license = "MIT"
+repository = "https://github.com/addy-47/nexus-rs"
+
+[lib]
+name = "nexus"
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+bm25 = { version = "2.3.2", default-features = false }
+encoding_rs = "0.8"
+futures-util = "0.3"
+html-to-markdown-rs = { version = "=3.14.1", default-features = false }
+log = "0.4"
+primp = { version = "2", default-features = false, features = ["query", "charset", "gzip", "brotli", "zstd", "deflate"] }
+rand = "0.10"
+regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "form", "query", "stream", "gzip", "brotli", "zstd", "deflate"] }
+scraper = "0.27"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
+url = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

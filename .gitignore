@@ -1,0 +1,20 @@
+/target/
+/.idea/
+/.vscode/
+.DS_Store
+*.profraw
+lcov.info
+
+
+# Generated benchmark outputs and captured provider responses (kept locally).
+/benchmarks/results/
+/benchmarks/investigation-*/
+/benchmarks/codex-search-*/**/*.json
+!/benchmarks/codex-search-*/queries.json
+/benchmarks/codex-search-*/**/*.md
+benchmarks/__pycache__/
+
+/scripts/__pycache__/
+
+# Local credentials
+.env
