@@ -2,16 +2,23 @@ use scraper::Html;
 
 use super::helpers::{cached_selector, element_text, read_serp_html};
 use crate::error::NexusError;
-use crate::model::{Engine, EngineHit};
+use crate::model::{Engine, EngineHit, TimeFilter};
 
 /// Queries Mojeek search endpoint via primp TLS impersonation.
 pub async fn query_mojeek(
     client: &primp::Client,
     query: &str,
+    time_filter: TimeFilter,
 ) -> Result<Vec<EngineHit>, NexusError> {
-    let response = client
-        .get("https://www.mojeek.com/search")
-        .query(&[("q", query)])
+    let mut request = client.get("https://www.mojeek.com/search").query(&[("q", query)]);
+    match time_filter {
+        TimeFilter::Day => request = request.query(&[("t", "1")]),
+        TimeFilter::Week => request = request.query(&[("t", "7")]),
+        TimeFilter::Month => request = request.query(&[("t", "30")]),
+        TimeFilter::Year => request = request.query(&[("t", "365")]),
+        TimeFilter::Any => {}
+    }
+    let response = request
         .send()
         .await
         .map_err(|e| NexusError::ScraperTransport(format!("Mojeek request failed: {e}")))?;

@@ -91,6 +91,7 @@ impl NexusSearch {
             });
         }
 
+        let dedup_start = std::time::Instant::now();
         let deduplicated_hits = fanout_outcome.hits.len();
         let candidate_urls: Vec<String> = fanout_outcome
             .hits
@@ -98,8 +99,9 @@ impl NexusSearch {
             .take(options.max_candidates)
             .map(|h| h.url)
             .collect();
+        let url_dedup_ms = dedup_start.elapsed().as_millis() as u64;
 
-        let (raw_pages, pages_fetched, fetch_total_ms, extraction_total_ms) =
+        let (raw_pages, pages_fetched, pages_extracted, fetch_total_ms, extraction_total_ms) =
             self.fetch_and_extract_pages(&candidate_urls, options).await;
 
         let (passages, chunking_total_ms, ranking_outcome) = self
@@ -112,10 +114,12 @@ impl NexusSearch {
             fanout_total_ms,
             engines: fanout_outcome.metrics,
             total_raw_hits: fanout_outcome.total_raw_hits,
+            url_dedup_ms,
             deduplicated_hits,
             fetch_total_ms,
             pages_fetched,
             extraction_total_ms,
+            pages_extracted,
             chunking_total_ms,
             total_passages_generated: passages.len(),
             ranking_total_ms: ranking_outcome.total_ranking_ms,
@@ -126,12 +130,13 @@ impl NexusSearch {
         };
 
         log::info!(
-            "[Nexus::Telemetry] Query='{}' total={}ms | Fanout: {}ms (raw={}, dedup={}) | Fetch: {}ms (pages={}) | Extract: {}ms | Chunk: {}ms (passages={}) | Rank: {}ms (mode={:?}, sparse={:?}, dense={:?}, rrf={:?})",
+            "[Nexus::Telemetry] Query='{}' total={}ms | Fanout: {}ms (raw={}, dedup={} in {}ms) | Fetch: {}ms (pages={}) | Extract: {}ms | Chunk: {}ms (passages={}) | Rank: {}ms (mode={:?}, sparse={:?}, dense={:?}, rrf={:?})",
             trimmed_query,
             metrics.total_pipeline_ms,
             metrics.fanout_total_ms,
             metrics.total_raw_hits,
             metrics.deduplicated_hits,
+            metrics.url_dedup_ms,
             metrics.fetch_total_ms,
             metrics.pages_fetched.len(),
             metrics.extraction_total_ms,
@@ -156,7 +161,13 @@ impl NexusSearch {
         &self,
         urls: &[String],
         options: &NexusSearchOptions,
-    ) -> (Vec<RawPage>, Vec<PageFetchMetrics>, u64, u64) {
+    ) -> (
+        Vec<RawPage>,
+        Vec<PageFetchMetrics>,
+        Vec<crate::model::PageExtractMetrics>,
+        u64,
+        u64,
+    ) {
         let fetcher = self.fetcher.with_limits(
             std::time::Duration::from_millis(options.fetch_timeout_ms),
             options.max_response_bytes,
@@ -171,16 +182,24 @@ impl NexusSearch {
         let extract_start = std::time::Instant::now();
         let mut raw_pages = Vec::with_capacity(fetch_results.len());
         let mut page_metrics = Vec::with_capacity(fetch_results.len());
+        let mut extract_metrics = Vec::with_capacity(fetch_results.len());
 
         for item in fetch_results {
             page_metrics.push(item.metrics);
             match item.outcome {
                 Ok((final_url, html)) if !html.trim().is_empty() => {
+                    let page_extract_start = std::time::Instant::now();
                     let page = extraction::extract_document(
                         &final_url,
                         &html,
                         extraction::DEFAULT_MAX_PAGE_CHARS,
                     );
+                    let page_extract_ms = page_extract_start.elapsed().as_millis() as u64;
+                    extract_metrics.push(crate::model::PageExtractMetrics {
+                        url: final_url.clone(),
+                        extraction_ms: page_extract_ms,
+                        markdown_bytes: page.markdown.len(),
+                    });
                     raw_pages.push(page);
                 }
                 Ok((final_url, _)) => {
@@ -199,6 +218,7 @@ impl NexusSearch {
         (
             raw_pages,
             page_metrics,
+            extract_metrics,
             fetch_total_ms,
             extraction_total_ms,
         )

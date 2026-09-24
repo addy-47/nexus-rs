@@ -36,7 +36,7 @@ pub async fn fetch_with_redirect_vetting(
         let mut cached_client: Option<(String, u16, reqwest::Client)> = None;
         let mut total_dns_ms = 0u64;
 
-        for hop in 0..MAX_REDIRECT_HOPS {
+        for hop in 0..=MAX_REDIRECT_HOPS {
             let hop_count = hop + 1;
             let (host, port) = extract_host_and_port(&current_url)?;
             let client = match cached_client {
@@ -155,7 +155,7 @@ fn resolve_redirect_location(
     current_hop: usize,
     initial_url: &str,
 ) -> Result<Url, NexusError> {
-    if current_hop + 1 >= MAX_REDIRECT_HOPS {
+    if current_hop + 1 > MAX_REDIRECT_HOPS {
         return Err(NexusError::TooManyRedirects {
             max_hops: MAX_REDIRECT_HOPS,
             url: initial_url.to_owned(),

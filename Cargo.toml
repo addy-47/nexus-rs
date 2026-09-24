@@ -19,7 +19,7 @@ encoding_rs = "0.8"
 futures-util = "0.3"
 html-to-markdown-rs = { version = "=3.14.1", default-features = false }
 log = "0.4"
-primp = { version = "2", default-features = false, features = ["query", "charset", "gzip", "brotli", "zstd", "deflate"] }
+primp = { version = "2", default-features = false, features = ["query", "charset", "stream", "gzip", "brotli", "zstd", "deflate"] }
 rand = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "form", "query", "stream", "gzip", "brotli", "zstd", "deflate"] }
 scraper = "0.27"

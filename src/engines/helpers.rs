@@ -67,11 +67,13 @@ pub fn canonicalize_url(raw_url: &str) -> String {
 
 pub const MAX_SERP_BYTES: usize = 2 * 1024 * 1024; // 2 MB SERP ceiling
 
-/// Reads SERP response body and verifies that body does not exceed MAX_SERP_BYTES.
+/// Reads SERP response body via streaming and verifies that body does not exceed MAX_SERP_BYTES.
 pub async fn read_serp_html(
     response: primp::Response,
     engine_name: &'static str,
 ) -> Result<String, crate::error::NexusError> {
+    use futures_util::StreamExt;
+
     if let Some(cl) = response.content_length()
         && cl as usize > MAX_SERP_BYTES
     {
@@ -80,18 +82,26 @@ pub async fn read_serp_html(
         )));
     }
 
-    let text = response.text().await.map_err(|e| {
-        crate::error::NexusError::ScraperTransport(format!(
-            "{engine_name} SERP body read failed: {e}"
-        ))
-    })?;
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::new();
 
-    if text.len() > MAX_SERP_BYTES {
-        return Err(crate::error::NexusError::ScraperTransport(format!(
-            "{engine_name} SERP response body {} bytes exceeds maximum limit of {MAX_SERP_BYTES} bytes",
-            text.len()
-        )));
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res.map_err(|e| {
+            crate::error::NexusError::ScraperTransport(format!(
+                "{engine_name} SERP body chunk read failed: {e}"
+            ))
+        })?;
+        if buffer.len() + chunk.len() > MAX_SERP_BYTES {
+            return Err(crate::error::NexusError::ScraperTransport(format!(
+                "{engine_name} SERP response body exceeds maximum limit of {MAX_SERP_BYTES} bytes"
+            )));
+        }
+        buffer.extend_from_slice(&chunk);
     }
 
-    Ok(text)
+    String::from_utf8(buffer).map_err(|e| {
+        crate::error::NexusError::ScraperTransport(format!(
+            "{engine_name} SERP body invalid UTF-8: {e}"
+        ))
+    })
 }

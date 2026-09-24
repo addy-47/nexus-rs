@@ -131,9 +131,9 @@ async fn dispatch_engine_query(
 ) -> Result<Vec<EngineHit>, NexusError> {
     match engine {
         Engine::Duckduckgo => duckduckgo::query_duckduckgo(client, query, time_filter).await,
-        Engine::Bing => bing::query_bing(client, query).await,
+        Engine::Bing => bing::query_bing(client, query, time_filter).await,
         Engine::Yahoo => yahoo::query_yahoo(client, query, time_filter).await,
-        Engine::Mojeek => mojeek::query_mojeek(client, query).await,
+        Engine::Mojeek => mojeek::query_mojeek(client, query, time_filter).await,
     }
 }
 

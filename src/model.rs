@@ -128,6 +128,17 @@ pub struct PageFetchMetrics {
     pub error: Option<String>,
 }
 
+/// Telemetry metrics for DOM cleaning and Markdown extraction on an individual page.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct PageExtractMetrics {
+    /// URL of the extracted page.
+    pub url: String,
+    /// Duration of Readability and Markdown conversion in milliseconds.
+    pub extraction_ms: u64,
+    /// Byte length of generated Markdown content.
+    pub markdown_bytes: usize,
+}
+
 /// Comprehensive latency and throughput metrics across all pipeline stages.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct NexusSearchMetrics {
@@ -139,6 +150,8 @@ pub struct NexusSearchMetrics {
     pub engines: Vec<EngineQueryMetrics>,
     /// Stage 1A: Total raw hits aggregated before deduplication.
     pub total_raw_hits: usize,
+    /// Stage 1A: Candidate URL deduplication and normalization duration in milliseconds.
+    pub url_dedup_ms: u64,
     /// Stage 1A: Deduplicated candidate hits.
     pub deduplicated_hits: usize,
     /// Stage 1B: Total page fetch duration in milliseconds.
@@ -147,6 +160,8 @@ pub struct NexusSearchMetrics {
     pub pages_fetched: Vec<PageFetchMetrics>,
     /// Stage 1C: Total DOM cleaning and Markdown conversion duration in milliseconds.
     pub extraction_total_ms: u64,
+    /// Stage 1C: Per-page extraction metrics.
+    pub pages_extracted: Vec<PageExtractMetrics>,
     /// Stage 2A: Total sliding-window chunking duration in milliseconds.
     pub chunking_total_ms: u64,
     /// Stage 2A: Number of passage chunks produced across all extracted documents.

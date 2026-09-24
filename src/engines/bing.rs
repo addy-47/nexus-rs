@@ -6,13 +6,32 @@ use url::Url;
 
 use super::helpers::{cached_selector, element_text, read_serp_html};
 use crate::error::NexusError;
-use crate::model::{Engine, EngineHit};
+use crate::model::{Engine, EngineHit, TimeFilter};
 
 /// Queries Bing search endpoint via primp TLS impersonation.
-pub async fn query_bing(client: &primp::Client, query: &str) -> Result<Vec<EngineHit>, NexusError> {
+pub async fn query_bing(
+    client: &primp::Client,
+    query: &str,
+    time_filter: TimeFilter,
+) -> Result<Vec<EngineHit>, NexusError> {
     let target_url = {
         let mut encoded = url::form_urlencoded::Serializer::new(String::new());
         encoded.append_pair("q", query);
+        match time_filter {
+            TimeFilter::Day => {
+                encoded.append_pair("qft", "+filterui:age-1d");
+            }
+            TimeFilter::Week => {
+                encoded.append_pair("qft", "+filterui:age-1w");
+            }
+            TimeFilter::Month => {
+                encoded.append_pair("qft", "+filterui:age-1m");
+            }
+            TimeFilter::Year => {
+                encoded.append_pair("qft", "+filterui:age-1y");
+            }
+            TimeFilter::Any => {}
+        }
         let query_string = encoded.finish().replace('+', "%20");
         format!("https://www.bing.com/search?{query_string}")
     };
