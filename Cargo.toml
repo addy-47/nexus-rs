@@ -1,11 +1,14 @@
 [package]
 name = "nexus-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.89"
-description = "High-performance, standalone search and retrieval engine for AI agents"
+description = "High-performance, standalone search and retrieval engine for AI agents. Multi-engine fanout, SSRF-hardened page extraction, and tri-mode relevance ranking (BM25, Dense, Hybrid RRF)."
 license = "MIT"
+readme = "README.md"
 repository = "https://github.com/addy-47/nexus-rs"
+categories = ["web-programming", "asynchronous", "science"]
+keywords = ["search", "web-scraping", "SSRF", "retrieval", "RRF", "embedding", "BM25"]
 
 [lib]
 name = "nexus"
@@ -14,10 +17,10 @@ path = "src/lib.rs"
 [dependencies]
 async-trait = "0.1"
 base64 = "0.22"
-bm25 = { version = "2.3.2", default-features = false }
+bm25 = { version = "2.3", default-features = false }
 encoding_rs = "0.8"
 futures-util = "0.3"
-html-to-markdown-rs = { version = "=3.14.1", default-features = false }
+html-to-markdown-rs = { version = "3.14", default-features = false }
 log = "0.4"
 primp = { version = "2", default-features = false, features = ["query", "charset", "stream", "gzip", "brotli", "zstd", "deflate"] }
 rand = "0.10"
