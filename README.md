@@ -1,7 +1,7 @@
 # nexus-rs
 
-[![Crates.io](https://img.shields.io/badge/crates.io-v0.1.0-orange.svg)](https://crates.io)
-[![Documentation](https://img.shields.io/badge/docs.rs-nexus-blue.svg)](https://docs.rs)
+[![Crates.io](https://img.shields.io/crates/v/nexus-rs.svg)](https://crates.io/crates/nexus-rs)
+[![Documentation](https://docs.rs/nexus-rs/badge.svg)](https://docs.rs/nexus-rs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust: 2024](https://img.shields.io/badge/Rust-2024%20Edition-red.svg)](Cargo.toml)
 
@@ -78,7 +78,7 @@ Add `nexus-rs` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nexus-rs = { git = "https://github.com/addy-47/nexus-rs.git" }
+nexus-rs = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
