@@ -24,6 +24,7 @@ jobs:
       - name: Run tests
         run: cargo test --release
       - name: Run clippy
+        if: matrix.rust == 'stable'
         run: cargo clippy --release -- -D warnings
       - name: Run cargo doc
         run: cargo doc --no-deps
