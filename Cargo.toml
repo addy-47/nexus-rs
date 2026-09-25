@@ -8,7 +8,7 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/addy-47/nexus-rs"
 categories = ["web-programming", "asynchronous", "science"]
-keywords = ["search", "web-scraping", "SSRF", "retrieval", "RRF", "embedding", "BM25"]
+keywords = ["search", "web-scraping", "SSRF", "retrieval", "RRF"]
 
 [lib]
 name = "nexus"
