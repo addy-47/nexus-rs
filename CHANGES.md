@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `nexus-rs` will be documented in this file.
+All notable changes to `nexuss` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial release of `nexus-rs`.
+- Initial release of `nexuss`.
 - Multi-engine fanout with adaptive quorum early-exit (DuckDuckGo, Bing, Yahoo, Mojeek, GoogleWML).
 - SSRF-hardened egress with DNS pre-flight, socket pinning, and manual redirect validation loop.
 - Sliding-window passage chunking with configurable size and overlap.

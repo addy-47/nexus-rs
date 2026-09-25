@@ -1,7 +1,7 @@
-# nexus-rs
+# nexuss
 
-[![Crates.io](https://img.shields.io/crates/v/nexus-rs.svg)](https://crates.io/crates/nexus-rs)
-[![Documentation](https://docs.rs/nexus-rs/badge.svg)](https://docs.rs/nexus-rs)
+[![Crates.io](https://img.shields.io/crates/v/nexuss.svg)](https://crates.io/crates/nexuss)
+[![Documentation](https://docs.rs/nexuss/badge.svg)](https://docs.rs/nexuss)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust: 2024](https://img.shields.io/badge/Rust-2024%20Edition-red.svg)](Cargo.toml)
 
@@ -13,8 +13,8 @@ High-performance, standalone, zero-bloat Rust library designed for agentic web s
 
 Modern AI agents and voice assistants require web retrieval that is **fast**, **safe**, and **token-efficient**:
 1. **Keyless Multi-Provider Search**: Concurrently query web providers (DuckDuckGo, Bing, Yahoo, Mojeek) without third-party API keys or rate-limited intermediaries.
-2. **Hardened Egress Defense**: Web crawlers executing LLM-prompted searches are prime targets for SSRF, DNS rebinding, and metadata exfiltration attacks. `nexus-rs` enforces pre-flight IP validation and socket pinning on every request and redirect hop.
-3. **Decoupled Document & Passage Lifecycle**: Full web pages often contain tens of thousands of tokens. `nexus-rs` extracts clean Markdown, deterministically segments articles into overlapping passages, and scores them using BM25, neural vector embeddings, or Reciprocal Rank Fusion ($k=60$). Both raw documents and scored passages are returned, allowing host runtimes to dynamically enforce context token budgets and instant in-session pagination.
+2. **Hardened Egress Defense**: Web crawlers executing LLM-prompted searches are prime targets for SSRF, DNS rebinding, and metadata exfiltration attacks. `nexuss` enforces pre-flight IP validation and socket pinning on every request and redirect hop.
+3. **Decoupled Document & Passage Lifecycle**: Full web pages often contain tens of thousands of tokens. `nexuss` extracts clean Markdown, deterministically segments articles into overlapping passages, and scores them using BM25, neural vector embeddings, or Reciprocal Rank Fusion ($k=60$). Both raw documents and scored passages are returned, allowing host runtimes to dynamically enforce context token budgets and instant in-session pagination.
 
 ---
 
@@ -74,11 +74,11 @@ Every outbound candidate URL is passed through an egress firewall:
 
 ## Installation
 
-Add `nexus-rs` to your `Cargo.toml`:
+Add `nexuss` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nexus-rs = "0.1"
+nexuss = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
