@@ -245,6 +245,12 @@ pub struct RankingPolicy {
     pub max_candidates_to_rerank: usize,
     /// Score multiplier for passages whose source URL was corroborated by >= 2 distinct engine families.
     pub consensus_multiplier: f32,
+    /// Minimum normalized score (after min-max normalization to [0,1]) for a
+    /// passage to survive ranking. P0-8: raw RRF scores cluster in [0.030, 0.033]
+    /// by construction (1/(60+1)+1/(60+1)), so they cannot discriminate garbage
+    /// from evidence. Normalization makes the top passage 1.0; this floor then
+    /// rejects the tail. Default 0.0 preserves all passages until tuned.
+    pub min_score: f32,
 }
 
 impl Default for RankingPolicy {
@@ -253,6 +259,7 @@ impl Default for RankingPolicy {
             two_stage_reranking: true,
             max_candidates_to_rerank: 10,
             consensus_multiplier: 1.5,
+            min_score: 0.0,
         }
     }
 }

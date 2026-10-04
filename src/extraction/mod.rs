@@ -1,6 +1,7 @@
 use crate::model::RawPage;
 
 pub mod cleaner;
+pub mod quality;
 
 pub const DEFAULT_MAX_PAGE_CHARS: usize = 30_000;
 

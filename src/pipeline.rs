@@ -96,16 +96,18 @@ impl NexusSearch {
 
         let dedup_start = std::time::Instant::now();
         let deduplicated_hits = fanout_outcome.hits.len();
-        let candidate_urls: Vec<String> = fanout_outcome
-            .hits
-            .into_iter()
-            .take(options.max_candidates)
-            .map(|h| h.url)
-            .collect();
+        // P0-5: entity anchors + domain intent reorder candidates so fetch slots
+        // go to sources that can satisfy the query. Never starves: unmatched
+        // hits follow in original order.
+        let candidate_urls: Vec<String> = extraction::quality::order_candidates(
+            trimmed_query,
+            fanout_outcome.hits,
+            options.max_candidates,
+        );
         let url_dedup_ms = dedup_start.elapsed().as_millis() as u64;
 
         let (raw_pages, pages_fetched, pages_extracted, fetch_total_ms, extraction_total_ms) =
-            self.fetch_and_extract_pages(&candidate_urls, options).await;
+            self.fetch_and_extract_pages(&candidate_urls, trimmed_query, options).await;
 
         let (passages, chunking_total_ms, ranking_outcome) = self
             .chunk_and_rank_passages(
@@ -168,6 +170,7 @@ impl NexusSearch {
     async fn fetch_and_extract_pages(
         &self,
         urls: &[String],
+        query: &str,
         options: &NexusSearchOptions,
     ) -> (
         Vec<RawPage>,
@@ -191,6 +194,10 @@ impl NexusSearch {
         let mut raw_pages = Vec::with_capacity(fetch_results.len());
         let mut page_metrics = Vec::with_capacity(fetch_results.len());
         let mut extract_metrics = Vec::with_capacity(fetch_results.len());
+        // P0-5 language fallbacks: pages skipped for language mismatch are kept
+        // aside and the first is re-admitted if nothing else survived, so this
+        // filter can never starve the corpus on its own.
+        let mut language_skipped: Vec<RawPage> = Vec::new();
 
         for item in fetch_results {
             page_metrics.push(item.metrics);
@@ -203,6 +210,42 @@ impl NexusSearch {
                         extraction::DEFAULT_MAX_PAGE_CHARS,
                     );
                     let page_extract_ms = page_extract_start.elapsed().as_millis() as u64;
+                    // P0-4: bot-challenge / block / error shells are never evidence,
+                    // regardless of rank. (G3 `ent_03`: block page scored 0.033.)
+                    if extraction::quality::is_challenge_or_error_page(
+                        &page.title,
+                        &page.markdown,
+                    ) {
+                        log::warn!(
+                            "[Nexus::Pipeline] Rejecting challenge/error page as source: {} (title: {})",
+                            final_url,
+                            page.title
+                        );
+                        continue;
+                    }
+                    // P0-3: code-dominated pages are never evidence. (G3 `cmp_03`:
+                    // 22,540 chars of Closure JS; `ent_01`: 41,930 chars of Adobe
+                    // Target JS — both delivered as passages.)
+                    if extraction::quality::is_code_like(&page.markdown) {
+                        log::warn!(
+                            "[Nexus::Pipeline] Rejecting code-dominated page as source: {} ({} bytes)",
+                            final_url,
+                            page.markdown.len()
+                        );
+                        continue;
+                    }
+                    // P0-5 language: an explicit non-Latin `hl=` marker for an
+                    // ASCII query is a wrong-language signal (G3 `cmp_03`: `?hl=ru`
+                    // served Russian). Parked aside, re-admitted only if nothing
+                    // else survived (see below).
+                    if extraction::quality::is_language_mismatched(&final_url, query) {
+                        log::warn!(
+                            "[Nexus::Pipeline] Parking language-mismatched page as source: {}",
+                            final_url
+                        );
+                        language_skipped.push(page);
+                        continue;
+                    }
                     extract_metrics.push(crate::model::PageExtractMetrics {
                         url: final_url.clone(),
                         extraction_ms: page_extract_ms,
@@ -219,6 +262,17 @@ impl NexusSearch {
                         item.requested_url
                     );
                 }
+            }
+        }
+        // Non-starvation: if every surviving page was parked for language
+        // mismatch, re-admit the first rather than returning an empty corpus.
+        if raw_pages.is_empty() {
+            if let Some(page) = language_skipped.into_iter().next() {
+                log::warn!(
+                    "[Nexus::Pipeline] Re-admitting language-mismatched page (no alternatives): {}",
+                    page.url
+                );
+                raw_pages.push(page);
             }
         }
         let extraction_total_ms = extract_start.elapsed().as_millis() as u64;

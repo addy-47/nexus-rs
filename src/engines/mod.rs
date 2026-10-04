@@ -35,14 +35,18 @@ pub struct EngineFanout {
 }
 
 impl Default for EngineFanout {
-    /// Constructs default fanout searching DuckDuckGo, Bing, Yahoo, and Mojeek.
+    /// Constructs default fanout searching DuckDuckGo, Bing, and Yahoo.
+    ///
+    /// D7 (G3 baseline evidence): Mojeek serves a CAPTCHA wall and GoogleWml
+    /// returns HTTP 403 on every query — both burn ~550-700ms of the 1200ms
+    /// fanout budget for zero results. Removed from the active set until N2
+    /// engine health + quarantine can gate them. Modules retained.
     fn default() -> Self {
         Self {
             engines: vec![
                 Engine::Duckduckgo,
                 Engine::Bing,
                 Engine::Yahoo,
-                Engine::Mojeek,
             ],
             policy: FanoutPolicy::default(),
         }
@@ -53,6 +57,12 @@ impl EngineFanout {
     /// Constructs a fanout orchestrator with caller-selected search engines and fanout policy.
     pub fn new(engines: Vec<Engine>, policy: FanoutPolicy) -> Self {
         Self { engines, policy }
+    }
+
+    /// Borrows the configured engine set. Added for the D7 exact-set lock:
+    /// tests assert the default fanout contains exactly the live engines.
+    pub fn engines(&self) -> &[Engine] {
+        &self.engines
     }
 
     /// Queries all enabled engines concurrently with adaptive quorum early-exit and returns deduplicated hits with metrics.

@@ -25,8 +25,11 @@ pub fn extract_page_title(html: &str) -> Option<String> {
 
 /// Fast substring scan for opening and closing tag text without parsing full HTML DOM.
 fn fast_scan_tag(html: &str, tag: &str) -> Option<String> {
+    // N0/P1: byte-indexing a `&str` panics when 65536 lands inside a multi-byte
+    // char (observed live: a PDF served as a search result). Floor to the
+    // boundary — behavior is otherwise identical.
     let search_slice = if html.len() > 65536 {
-        &html[..65536]
+        &html[..html.floor_char_boundary(65536)]
     } else {
         html
     };
@@ -115,6 +118,65 @@ pub fn html_to_markdown(html: &str, max_chars: usize) -> Result<String, NexusErr
         return Ok(String::new());
     }
 
-    let retained: String = trimmed.chars().take(max_chars).collect();
+    // P0-6: the observation is vocalized, so strip Markdown that is unspeakable
+    // and decode entities exactly once. `[text](url)` -> `text`; fenced code
+    // blocks and flattened table skeletons are dropped (code passages are
+    // rejected wholesale by `quality::is_code_like`, this handles residue).
+    let sanitized = sanitize_for_speech(trimmed);
+    let retained: String = sanitized.chars().take(max_chars).collect();
     Ok(retained)
+}
+
+/// Strips unspeakable Markdown residue and decodes entities exactly once.
+///
+/// The converter output may carry `[label](url)` links, `#`/`##` heading marks,
+/// `**bold**`, fenced code blocks, and double-encoded entities (`&amp;apos;`).
+/// All are noise for a spoken answer; entities are decoded once so `&apos;`
+/// becomes `'` here and is then correctly re-escaped at the XML render layer.
+fn sanitize_for_speech(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_fence = false;
+    for line in input.lines() {
+        let t = line.trim();
+        // Drop fenced code blocks entirely (including the fences).
+        if t.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        // Drop flattened table skeletons: rows that are only pipes/dashes/colons.
+        let skeleton = t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) && t.contains('|');
+        if skeleton {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    // `[label](url)` -> `label`. Iterates to handle adjacent links.
+    let mut s = out;
+    loop {
+        let Some(open) = s.find('[') else { break };
+        let Some(mid) = s[open..].find("](") else { break };
+        let mid = open + mid;
+        let Some(close) = s[mid + 2..].find(')') else { break };
+        let close = mid + 2 + close;
+        let label = s[open + 1..mid].to_string();
+        s.replace_range(open..=close, &label);
+    }
+    // Strip `#` heading marks and `**`/`__` emphasis, then decode entities once.
+    let mut cleaned = String::with_capacity(s.len());
+    for line in s.lines() {
+        let t = line.trim_start_matches(['#', ' ']);
+        let t = t.replace("**", "").replace("__", "");
+        cleaned.push_str(&t);
+        cleaned.push('\n');
+    }
+    decode_html_entities(cleaned.trim())
+        .replace("&amp;apos;", "'")
+        .replace("&amp;quot;", "\"")
+        .replace("&amp;gt;", ">")
+        .replace("&amp;lt;", "<")
+        .replace("&amp;amp;", "&")
 }
