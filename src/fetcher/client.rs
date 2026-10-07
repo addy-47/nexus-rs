@@ -1,7 +1,7 @@
 use encoding_rs::Encoding;
 use futures_util::StreamExt;
-use reqwest::Response;
-use reqwest::header::CONTENT_TYPE;
+use primp::Response;
+use primp::header::CONTENT_TYPE;
 
 use crate::error::NexusError;
 
@@ -25,7 +25,7 @@ pub async fn read_bounded_body(
     let mut buffer = Vec::with_capacity(initial_cap);
 
     while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(NexusError::Http)?;
+        let chunk = chunk_result.map_err(NexusError::Primp)?;
         if buffer.len() + chunk.len() > max_response_bytes {
             let needed = max_response_bytes.saturating_sub(buffer.len());
             if needed > 0 {

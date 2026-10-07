@@ -10,7 +10,9 @@ pub async fn query_mojeek(
     query: &str,
     time_filter: TimeFilter,
 ) -> Result<Vec<EngineHit>, NexusError> {
-    let mut request = client.get("https://www.mojeek.com/search").query(&[("q", query)]);
+    let mut request = client
+        .get("https://www.mojeek.com/search")
+        .query(&[("q", query)]);
     match time_filter {
         TimeFilter::Day => request = request.query(&[("t", "1")]),
         TimeFilter::Week => request = request.query(&[("t", "7")]),

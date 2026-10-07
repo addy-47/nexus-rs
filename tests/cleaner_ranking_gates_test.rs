@@ -42,7 +42,10 @@ fn t_cleaner_link_markup_stripped_url_dropped() {
     let html = "<html><body><p>See \
         <a href=\"https://example.com/x\">label</a> now</p></body></html>";
     let out = html_to_markdown(html, 10_000).unwrap();
-    assert!(out.contains("label"), "link label must survive; got: {out:?}");
+    assert!(
+        out.contains("label"),
+        "link label must survive; got: {out:?}"
+    );
     assert!(
         !out.contains("example.com/x"),
         "raw link URL must be stripped; got: {out:?}"
@@ -70,8 +73,7 @@ fn t_cleaner_fenced_code_leaves_no_fence_markers() {
 fn is_skeleton_line(line: &str) -> bool {
     // Mirrors the production table-skeleton predicate; used only to assert
     // the postcondition "no skeleton residue survives".
-    line.chars()
-        .all(|c| matches!(c, '|' | '-' | ':' | ' ')) && line.contains('|')
+    line.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')) && line.contains('|')
 }
 
 #[test]
@@ -81,7 +83,10 @@ fn t_cleaner_table_keeps_cells_drops_skeleton() {
         <tr><td>Ada</td><td>36</td></tr></table>\
         <p>After table.</p></body></html>";
     let out = html_to_markdown(html, 10_000).unwrap();
-    assert!(out.contains("Ada"), "cell content must survive; got: {out:?}");
+    assert!(
+        out.contains("Ada"),
+        "cell content must survive; got: {out:?}"
+    );
     assert!(out.contains("After table"), "got: {out:?}");
     assert!(
         !out.lines().any(is_skeleton_line),
@@ -93,7 +98,10 @@ fn t_cleaner_table_keeps_cells_drops_skeleton() {
 fn t_cleaner_entities_decoded_exactly_once() {
     let html = "<html><body><p>Fish &amp; Chips and it&apos;s &quot;quoted&quot;</p></body></html>";
     let out = html_to_markdown(html, 10_000).unwrap();
-    assert!(out.contains("Fish & Chips") || out.contains("Fish &"), "got: {out:?}");
+    assert!(
+        out.contains("Fish & Chips") || out.contains("Fish &"),
+        "got: {out:?}"
+    );
     assert!(out.contains("it's"), "got: {out:?}");
     for raw in ["&amp;", "&apos;", "&quot;"] {
         assert!(
@@ -162,10 +170,7 @@ fn t_title_h1_fallback() {
 #[test]
 fn t_title_entity_decoded() {
     let html = "<html><head><title>Fish &amp; Chips</title></head></html>";
-    assert_eq!(
-        extract_page_title(html),
-        Some("Fish & Chips".to_string())
-    );
+    assert_eq!(extract_page_title(html), Some("Fish & Chips".to_string()));
 }
 
 #[test]
@@ -187,10 +192,7 @@ fn t_title_survives_multibyte_char_straddling_64k() {
     html.push('\u{0375}'); // ͵ — straddles byte 65536
     html.push_str(&"b".repeat(5000));
     assert!(html.len() > 70_000);
-    assert_eq!(
-        extract_page_title(&html),
-        Some("Early Title".to_string())
-    );
+    assert_eq!(extract_page_title(&html), Some("Early Title".to_string()));
 }
 
 #[test]
@@ -201,10 +203,7 @@ fn t_title_beyond_64k_window_does_not_panic() {
     html.push('\u{0375}');
     html.push_str(&"b".repeat(1000));
     html.push_str("<title>Late Title</title>");
-    assert_eq!(
-        extract_page_title(&html),
-        Some("Late Title".to_string())
-    );
+    assert_eq!(extract_page_title(&html), Some("Late Title".to_string()));
 }
 
 #[test]
@@ -268,12 +267,15 @@ async fn t_sparse_normalizes_top_to_one_preserves_order() {
         &mut v,
         RankingMode::Sparse,
         None,
-        &RankingPolicy::default(),
+        &RankingPolicy {
+            min_score: 0.0,
+            ..Default::default()
+        },
         None,
     )
     .await
     .unwrap();
-    assert_eq!(v.len(), 3, "default min_score 0.0 keeps everything");
+    assert_eq!(v.len(), 3, "min_score 0.0 keeps everything");
     let titles: Vec<&str> = v.iter().map(|p| p.source_title.as_str()).collect();
     assert_eq!(titles, vec!["Top", "Mid", "Low"]);
     assert_eq!(v[0].score, 1.0, "top must normalize to exactly 1.0");
@@ -290,8 +292,10 @@ async fn t_sparse_normalizes_top_to_one_preserves_order() {
 
 #[tokio::test]
 async fn t_sparse_min_score_floor_keeps_only_top() {
-    let mut policy = RankingPolicy::default();
-    policy.min_score = 0.9;
+    let policy = RankingPolicy {
+        min_score: 0.9,
+        ..Default::default()
+    };
     let mut v = graded_passages_inverted_scores();
     rank_passages(RANK_QUERY, &mut v, RankingMode::Sparse, None, &policy, None)
         .await
@@ -303,8 +307,10 @@ async fn t_sparse_min_score_floor_keeps_only_top() {
 
 #[tokio::test]
 async fn t_sparse_floor_above_one_empties() {
-    let mut policy = RankingPolicy::default();
-    policy.min_score = 1.5;
+    let policy = RankingPolicy {
+        min_score: 1.5,
+        ..Default::default()
+    };
     let mut v = graded_passages_inverted_scores();
     rank_passages(RANK_QUERY, &mut v, RankingMode::Sparse, None, &policy, None)
         .await
@@ -315,16 +321,19 @@ async fn t_sparse_floor_above_one_empties() {
 #[tokio::test]
 async fn t_sparse_uniform_scores_all_become_one() {
     let mut v = vec![
-        passage("rust compiler memory safety", "https://a.ex/", "A", 0, 0.0),
-        passage("rust compiler memory safety", "https://b.ex/", "B", 1, 0.0),
-        passage("rust compiler memory safety", "https://c.ex/", "C", 2, 0.0),
+        passage("rust compiler memory safety alpha", "https://a.ex/", "A", 0, 0.0),
+        passage("rust compiler memory safety beta", "https://b.ex/", "B", 1, 0.0),
+        passage("rust compiler memory safety gamma", "https://c.ex/", "C", 2, 0.0),
     ];
     rank_passages(
         RANK_QUERY,
         &mut v,
         RankingMode::Sparse,
         None,
-        &RankingPolicy::default(),
+        &RankingPolicy {
+            min_score: 0.0,
+            ..Default::default()
+        },
         None,
     )
     .await
@@ -369,6 +378,6 @@ async fn t_sparse_empty_input_ok() {
 }
 
 #[test]
-fn t_ranking_default_min_score_is_zero() {
-    assert_eq!(RankingPolicy::default().min_score, 0.0);
+fn t_ranking_default_min_score_is_twelve_percent() {
+    assert_eq!(RankingPolicy::default().min_score, 0.12);
 }

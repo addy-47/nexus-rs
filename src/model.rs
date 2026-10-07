@@ -19,6 +19,8 @@ pub enum Engine {
     GoogleWml,
     /// Brave search.
     Brave,
+    /// Wikipedia REST search API.
+    Wikipedia,
 }
 
 /// Scoring strategy used to rank retrieved passages.
@@ -210,6 +212,8 @@ pub struct NexusSearchOptions {
     pub fetch_timeout_ms: u64,
     /// Maximum response bytes downloaded per individual candidate page.
     pub max_response_bytes: usize,
+    /// Optional lexical focus query for passage extraction.
+    pub focus: Option<String>,
 }
 
 /// Adaptive multi-engine fanout and early-exit quorum policy.
@@ -259,7 +263,7 @@ impl Default for RankingPolicy {
             two_stage_reranking: true,
             max_candidates_to_rerank: 10,
             consensus_multiplier: 1.5,
-            min_score: 0.0,
+            min_score: 0.12,
         }
     }
 }
@@ -274,6 +278,7 @@ impl fmt::Display for Engine {
             Self::Mojeek => write!(f, "mojeek"),
             Self::GoogleWml => write!(f, "google_wml"),
             Self::Brave => write!(f, "brave"),
+            Self::Wikipedia => write!(f, "wikipedia"),
         }
     }
 }
@@ -289,6 +294,7 @@ impl Default for NexusSearchOptions {
             chunk_overlap_words: 30,
             fetch_timeout_ms: 4000,
             max_response_bytes: 524_288,
+            focus: None,
         }
     }
 }
@@ -303,6 +309,7 @@ impl Engine {
             Self::Mojeek => "mojeek",
             Self::GoogleWml => "google_wml",
             Self::Brave => "brave",
+            Self::Wikipedia => "wikipedia",
         }
     }
 
@@ -313,6 +320,7 @@ impl Engine {
             Self::Mojeek => "mojeek",
             Self::GoogleWml => "google",
             Self::Brave => "brave",
+            Self::Wikipedia => "wikipedia",
         }
     }
 }

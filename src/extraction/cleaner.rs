@@ -156,11 +156,14 @@ fn sanitize_for_speech(input: &str) -> String {
     }
     // `[label](url)` -> `label`. Iterates to handle adjacent links.
     let mut s = out;
-    loop {
-        let Some(open) = s.find('[') else { break };
-        let Some(mid) = s[open..].find("](") else { break };
+    while let Some(open) = s.find('[') {
+        let Some(mid) = s[open..].find("](") else {
+            break;
+        };
         let mid = open + mid;
-        let Some(close) = s[mid + 2..].find(')') else { break };
+        let Some(close) = s[mid + 2..].find(')') else {
+            break;
+        };
         let close = mid + 2 + close;
         let label = s[open + 1..mid].to_string();
         s.replace_range(open..=close, &label);

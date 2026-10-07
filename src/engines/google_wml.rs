@@ -6,8 +6,7 @@ use crate::error::NexusError;
 use crate::model::{Engine, EngineHit, TimeFilter};
 
 /// Observed working Nokia mobile User-Agent profile for no-JS WML endpoint.
-pub const NOKIA_USER_AGENT: &str =
-    "Nokia6230/2.0 (03.15) Profile/MIDP-2.0 Configuration/CLDC-1.1";
+pub const NOKIA_USER_AGENT: &str = "Nokia6230/2.0 (03.15) Profile/MIDP-2.0 Configuration/CLDC-1.1";
 
 /// Queries Google's keyless mobile no-JS endpoint.
 pub async fn query_google_wml(
@@ -18,7 +17,10 @@ pub async fn query_google_wml(
     let mut request = client
         .get("https://www.google.com/wml/search")
         .header("User-Agent", NOKIA_USER_AGENT)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
         .header("Accept-Language", "en-US,en;q=0.9")
         .query(&[
             ("q", query),

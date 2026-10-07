@@ -214,3 +214,54 @@ async fn test_google_wml_challenge_detection() {
     let sorry_html = r#"<html><body>Please solve this /sorry/challenge</body></html>"#;
     assert!(parse_google_wml_html(sorry_html).is_err());
 }
+
+#[tokio::test]
+async fn test_brave_serp_parsing() {
+    use nexus::engines::brave::parse_brave_html;
+
+    let brave_html = r#"
+        <div class="snippet">
+            <a class="snippet-title" href="https://example.com/rust">Rust Programming</a>
+            <p class="snippet-description">Rust is a systems programming language.</p>
+        </div>
+    "#;
+    let hits = parse_brave_html(brave_html).expect("Brave parsing should succeed");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].engine, Engine::Brave);
+    assert_eq!(hits[0].title, "Rust Programming");
+    assert_eq!(hits[0].url, "https://example.com/rust");
+    assert!(hits[0].snippet.contains("systems programming language"));
+}
+
+#[tokio::test]
+async fn test_brave_challenge_detection() {
+    use nexus::engines::brave::parse_brave_html;
+
+    let challenge_html = r#"<html><body><div class="cf-browser-verification"></div></body></html>"#;
+    assert!(parse_brave_html(challenge_html).is_err());
+}
+
+#[tokio::test]
+async fn test_wikipedia_json_parsing() {
+    use nexus::engines::wikipedia::parse_wikipedia_json;
+
+    let wiki_json = br#"
+    {
+        "pages": [
+            {
+                "key": "Rust_(programming_language)",
+                "title": "Rust (programming language)",
+                "excerpt": "Rust is a multi-paradigm, general-purpose programming language.",
+                "description": "General-purpose programming language"
+            }
+        ]
+    }
+    "#;
+    let hits = parse_wikipedia_json(wiki_json).expect("Wikipedia parsing should succeed");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].engine, Engine::Wikipedia);
+    assert_eq!(hits[0].title, "Rust (programming language)");
+    assert_eq!(hits[0].url, "https://en.wikipedia.org/wiki/Rust_(programming_language)");
+    assert!(hits[0].snippet.contains("multi-paradigm"));
+}
+

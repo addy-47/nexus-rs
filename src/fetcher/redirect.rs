@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use reqwest::header::LOCATION;
-use reqwest::StatusCode;
+use primp::StatusCode;
+use primp::header::LOCATION;
 use url::Url;
 
 use super::client::read_bounded_body;
@@ -33,7 +33,7 @@ pub async fn fetch_with_redirect_vetting(
     let overall_start = Instant::now();
     tokio::time::timeout(timeout, async {
         let mut current_url = parse_and_validate_scheme(initial_url)?;
-        let mut cached_client: Option<(String, u16, reqwest::Client)> = None;
+        let mut cached_client: Option<(String, u16, primp::Client)> = None;
         let mut total_dns_ms = 0u64;
 
         for hop in 0..=MAX_REDIRECT_HOPS {
@@ -138,19 +138,12 @@ fn extract_host_and_port(url: &Url) -> Result<(String, u16), NexusError> {
 
 /// Determines whether an HTTP status code indicates a redirection.
 fn is_redirect_status(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::MOVED_PERMANENTLY
-            | StatusCode::FOUND
-            | StatusCode::SEE_OTHER
-            | StatusCode::TEMPORARY_REDIRECT
-            | StatusCode::PERMANENT_REDIRECT
-    )
+    status.is_redirection()
 }
 
 /// Resolves the Location header against the current URL and checks the redirect hop budget.
 fn resolve_redirect_location(
-    response: &reqwest::Response,
+    response: &primp::Response,
     current_url: &Url,
     current_hop: usize,
     initial_url: &str,

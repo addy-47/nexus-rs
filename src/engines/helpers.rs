@@ -132,7 +132,10 @@ pub fn norm_url_key(raw_url: &str) -> String {
 pub fn extract_domain(raw_url: &str) -> String {
     Url::parse(raw_url)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_lowercase()))
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches("www.").to_lowercase())
+        })
         .unwrap_or_default()
 }
 

@@ -43,32 +43,35 @@ pub async fn rank_hybrid(
 
     // 2. 2-Stage Re-ranking: Pre-filter candidate passages before dense neural embedding
     let dense_start = std::time::Instant::now();
-    let (dense_scores, dense_ranks) = if policy.two_stage_reranking && n > policy.max_candidates_to_rerank {
-        let mut sorted_indices: Vec<usize> = (0..n).collect();
-        sorted_indices.sort_by(|&a, &b| sparse_scores[b].total_cmp(&sparse_scores[a]));
+    let (dense_scores, dense_ranks) =
+        if policy.two_stage_reranking && n > policy.max_candidates_to_rerank {
+            let mut sorted_indices: Vec<usize> = (0..n).collect();
+            sorted_indices.sort_by(|&a, &b| sparse_scores[b].total_cmp(&sparse_scores[a]));
 
-        let top_k = policy.max_candidates_to_rerank.min(n);
-        let top_indices = &sorted_indices[..top_k];
+            let top_k = policy.max_candidates_to_rerank.min(n);
+            let top_indices = &sorted_indices[..top_k];
 
-        let candidate_passages: Vec<ScoredPassage> =
-            top_indices.iter().map(|&idx| passages[idx].clone()).collect();
-        let candidate_dense_scores = score_dense(query, &candidate_passages, embedder).await?;
-        let candidate_ranks = compute_ranks(&candidate_dense_scores);
+            let candidate_passages: Vec<ScoredPassage> = top_indices
+                .iter()
+                .map(|&idx| passages[idx].clone())
+                .collect();
+            let candidate_dense_scores = score_dense(query, &candidate_passages, embedder).await?;
+            let candidate_ranks = compute_ranks(&candidate_dense_scores);
 
-        let mut all_dense_scores = vec![None; n];
-        let mut all_dense_ranks = vec![top_k + 1; n];
+            let mut all_dense_scores = vec![None; n];
+            let mut all_dense_ranks = vec![top_k + 1; n];
 
-        for (cand_i, &orig_idx) in top_indices.iter().enumerate() {
-            all_dense_scores[orig_idx] = Some(candidate_dense_scores[cand_i]);
-            all_dense_ranks[orig_idx] = candidate_ranks[cand_i];
-        }
+            for (cand_i, &orig_idx) in top_indices.iter().enumerate() {
+                all_dense_scores[orig_idx] = Some(candidate_dense_scores[cand_i]);
+                all_dense_ranks[orig_idx] = candidate_ranks[cand_i];
+            }
 
-        (all_dense_scores, all_dense_ranks)
-    } else {
-        let full_dense = score_dense(query, passages, embedder).await?;
-        let full_ranks = compute_ranks(&full_dense);
-        (full_dense.into_iter().map(Some).collect(), full_ranks)
-    };
+            (all_dense_scores, all_dense_ranks)
+        } else {
+            let full_dense = score_dense(query, passages, embedder).await?;
+            let full_ranks = compute_ranks(&full_dense);
+            (full_dense.into_iter().map(Some).collect(), full_ranks)
+        };
     let dense_ms = dense_start.elapsed().as_millis() as u64;
 
     // 3. Compute RRF scores directly into passages with consensus multiplier

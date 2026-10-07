@@ -27,6 +27,7 @@ rand = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "form", "query", "stream", "gzip", "brotli", "zstd", "deflate"] }
 scraper = "0.27"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util"] }
 url = "2"

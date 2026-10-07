@@ -45,10 +45,7 @@ const CHALLENGE_MARKERS: &[&str] = &[
 /// Bounded and allocation-free beyond lowercasing the inspected windows.
 pub fn is_challenge_or_error_page(title: &str, markdown: &str) -> bool {
     let title_lower = title.to_ascii_lowercase();
-    if CHALLENGE_MARKERS
-        .iter()
-        .any(|m| title_lower.contains(m))
-    {
+    if CHALLENGE_MARKERS.iter().any(|m| title_lower.contains(m)) {
         return true;
     }
     let body_window: String = markdown.chars().take(2000).collect();
@@ -120,8 +117,8 @@ pub fn is_code_like(text: &str) -> bool {
 /// shaped tokens (`all-MiniLM-L6-v2`, `polyc-egress`, `v2026.9.6`, `3.75%`).
 ///
 /// Anchors are the load-bearing tokens a correct result must contain. G3 `ent_01`:
-/// the token `all` matched a hotel brand because nothing required `MiniLM`.
-fn entity_anchors(query: &str) -> Vec<String> {
+/// Extracts concrete anchor entities (quoted phrases, versions, identifiers, years).
+pub fn entity_anchors(query: &str) -> Vec<String> {
     let mut anchors = Vec::new();
     // Quoted spans first — explicit user intent.
     let mut rest = query;
@@ -180,9 +177,36 @@ fn domain_intent_domains(query: &str) -> Vec<&'static str> {
     out
 }
 
+/// Extracts apex domain from a URL to enforce domain diversity across candidate sources.
+pub fn extract_apex_domain(url: &str) -> String {
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_ascii_lowercase()))
+        .unwrap_or_default();
+    if host.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() <= 2 {
+        host
+    } else {
+        // Handle common ccSLDs e.g. co.uk, com.au, org.uk, etc.
+        let last = parts[parts.len() - 1];
+        let second_last = parts[parts.len() - 2];
+        if last.len() == 2 && matches!(second_last, "co" | "com" | "org" | "gov" | "edu" | "ac" | "net") {
+            if parts.len() >= 3 {
+                format!("{}.{}.{}", parts[parts.len() - 3], second_last, last)
+            } else {
+                host
+            }
+        } else {
+            format!("{}.{}", parts[parts.len() - 2], last)
+        }
+    }
+}
+
 /// Reorders candidate hits so anchored and intent-matching sources are fetched
-/// first. Never starves: non-matching hits follow in original order, so a weak
-/// anchor cannot empty the corpus — it only spends fetch slots wisely.
+/// first, while enforcing domain diversity (max 1-2 per apex domain).
 pub fn order_candidates(
     query: &str,
     mut hits: Vec<crate::model::EngineHit>,
@@ -211,7 +235,53 @@ pub fn order_candidates(
         hits = ordered;
     }
 
-    hits.into_iter().take(max_candidates).map(|h| h.url).collect()
+    let mut selected_urls = Vec::with_capacity(max_candidates);
+    let mut domain_counts = std::collections::HashMap::new();
+
+    // Pass 1: max 1 per apex domain to ensure variety across sources
+    for hit in &hits {
+        if selected_urls.len() >= max_candidates {
+            break;
+        }
+        let apex = extract_apex_domain(&hit.url);
+        let count = domain_counts.entry(apex).or_insert(0usize);
+        if *count < 1 {
+            *count += 1;
+            selected_urls.push(hit.url.clone());
+        }
+    }
+
+    // Pass 2: if slots remain, allow up to 2 per apex domain
+    if selected_urls.len() < max_candidates {
+        for hit in &hits {
+            if selected_urls.len() >= max_candidates {
+                break;
+            }
+            if selected_urls.iter().any(|u| u == &hit.url) {
+                continue;
+            }
+            let apex = extract_apex_domain(&hit.url);
+            let count = domain_counts.entry(apex).or_insert(0usize);
+            if *count < 2 {
+                *count += 1;
+                selected_urls.push(hit.url.clone());
+            }
+        }
+    }
+
+    // Pass 3: fill any remainder if candidate pool is tiny
+    if selected_urls.len() < max_candidates {
+        for hit in &hits {
+            if selected_urls.len() >= max_candidates {
+                break;
+            }
+            if !selected_urls.iter().any(|u| u == &hit.url) {
+                selected_urls.push(hit.url.clone());
+            }
+        }
+    }
+
+    selected_urls
 }
 
 /// Detects a language mismatch signalled by the URL itself.
@@ -226,9 +296,26 @@ pub fn is_language_mismatched(url: &str, query: &str) -> bool {
     }
     let u = url.to_ascii_lowercase();
     const NON_LATIN_HL: [&str; 20] = [
-        "hl=ru", "hl=uk", "hl=be", "hl=zh", "hl=ja", "hl=ko", "hl=ar", "hl=he", "hl=hi",
-        "hl=th", "hl=el", "hl=bg", "hl=sr", "hl=fa", "hl=ur", "lr=lang_ru", "lr=lang_zh",
-        "lr=lang_ja", "lr=lang_ko", "lr=lang_ar",
+        "hl=ru",
+        "hl=uk",
+        "hl=be",
+        "hl=zh",
+        "hl=ja",
+        "hl=ko",
+        "hl=ar",
+        "hl=he",
+        "hl=hi",
+        "hl=th",
+        "hl=el",
+        "hl=bg",
+        "hl=sr",
+        "hl=fa",
+        "hl=ur",
+        "lr=lang_ru",
+        "lr=lang_zh",
+        "lr=lang_ja",
+        "lr=lang_ko",
+        "lr=lang_ar",
     ];
     NON_LATIN_HL.iter().any(|m| u.contains(m))
 }

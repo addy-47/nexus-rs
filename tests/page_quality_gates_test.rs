@@ -341,14 +341,17 @@ fn t_lang_false_variants() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn t_fanout_default_is_exactly_duckduckgo_bing_yahoo() {
-    // Exact-set lock via the `engines()` accessor: duplicates and silent
-    // re-additions are both detectable (a Debug-render check could not see
-    // duplicates).
+fn t_fanout_default_is_exactly_live_engines() {
     let engines = EngineFanout::default().engines().to_vec();
     assert_eq!(
         engines,
-        vec![Engine::Duckduckgo, Engine::Bing, Engine::Yahoo],
-        "default fanout must be exactly the 3 live engines, in order"
+        vec![
+            Engine::Duckduckgo,
+            Engine::Bing,
+            Engine::Yahoo,
+            Engine::Brave,
+            Engine::Wikipedia,
+        ],
+        "default fanout must be exactly the 5 live engines, in order"
     );
 }

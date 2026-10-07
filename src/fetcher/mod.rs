@@ -75,7 +75,9 @@ impl EgressFetcher {
     /// Fetches a single page by URL, applying full SSRF and redirect validation with metrics.
     pub async fn fetch_page(&self, url: &str) -> FetchedPageResult {
         let start = std::time::Instant::now();
-        match redirect::fetch_with_redirect_vetting(url, self.timeout, self.max_response_bytes).await {
+        match redirect::fetch_with_redirect_vetting(url, self.timeout, self.max_response_bytes)
+            .await
+        {
             Ok(res) => FetchedPageResult {
                 requested_url: url.to_string(),
                 outcome: Ok((res.final_url, res.body)),

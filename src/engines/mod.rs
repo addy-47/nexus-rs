@@ -1,18 +1,28 @@
 use std::collections::HashSet;
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use futures_util::stream::{FuturesUnordered, StreamExt};
+use futures_util::{
+    stream::{FuturesUnordered, StreamExt},
+    FutureExt,
+};
 use tokio::time::Instant;
 
 use crate::error::NexusError;
 use crate::model::{Engine, EngineHit, EngineQueryMetrics, FanoutPolicy, TimeFilter};
 
 pub mod bing;
+pub mod brave;
 pub mod duckduckgo;
 pub mod google_wml;
+pub mod health;
 pub mod helpers;
 pub mod mojeek;
+pub mod wikipedia;
 pub mod yahoo;
+
+pub use health::EngineHealthTracker;
 
 /// Result outcome containing deduplicated hits and granular per-engine telemetry.
 #[derive(Clone, Debug, Default)]
@@ -32,6 +42,7 @@ pub struct FanoutOutcome {
 pub struct EngineFanout {
     engines: Vec<Engine>,
     policy: FanoutPolicy,
+    health: Arc<RwLock<EngineHealthTracker>>,
 }
 
 impl Default for EngineFanout {
@@ -47,8 +58,11 @@ impl Default for EngineFanout {
                 Engine::Duckduckgo,
                 Engine::Bing,
                 Engine::Yahoo,
+                Engine::Brave,
+                Engine::Wikipedia,
             ],
             policy: FanoutPolicy::default(),
+            health: Arc::new(RwLock::new(EngineHealthTracker::new())),
         }
     }
 }
@@ -56,13 +70,34 @@ impl Default for EngineFanout {
 impl EngineFanout {
     /// Constructs a fanout orchestrator with caller-selected search engines and fanout policy.
     pub fn new(engines: Vec<Engine>, policy: FanoutPolicy) -> Self {
-        Self { engines, policy }
+        Self {
+            engines,
+            policy,
+            health: Arc::new(RwLock::new(EngineHealthTracker::new())),
+        }
     }
 
-    /// Borrows the configured engine set. Added for the D7 exact-set lock:
-    /// tests assert the default fanout contains exactly the live engines.
+    /// Constructs fanout with an explicitly shared health tracker.
+    pub fn with_health(
+        engines: Vec<Engine>,
+        policy: FanoutPolicy,
+        health: Arc<RwLock<EngineHealthTracker>>,
+    ) -> Self {
+        Self {
+            engines,
+            policy,
+            health,
+        }
+    }
+
+    /// Borrows the configured engine set.
     pub fn engines(&self) -> &[Engine] {
         &self.engines
+    }
+
+    /// Borrows the health tracker.
+    pub fn health(&self) -> Arc<RwLock<EngineHealthTracker>> {
+        Arc::clone(&self.health)
     }
 
     /// Queries all enabled engines concurrently with adaptive quorum early-exit and returns deduplicated hits with metrics.
@@ -78,20 +113,62 @@ impl EngineFanout {
         let client = build_tls_client()?;
 
         let mut tasks = FuturesUnordered::new();
+        let mut engine_metrics = Vec::with_capacity(self.engines.len());
+
         for &engine in &self.engines {
+            if self
+                .health
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_quarantined(engine)
+            {
+                log::info!("[Nexus::Engines] Skipping quarantined engine {:?}", engine);
+                engine_metrics.push(EngineQueryMetrics {
+                    engine,
+                    latency_ms: 0,
+                    hit_count: 0,
+                    success: false,
+                    error: Some("quarantined".to_string()),
+                });
+                continue;
+            }
+
             let client_ref = client.clone();
             let q = query.to_owned();
             tasks.push(async move {
                 let start = std::time::Instant::now();
-                let res = dispatch_engine_query(&client_ref, engine, &q, time_filter).await;
+                let res_unwind = AssertUnwindSafe(dispatch_engine_query(
+                    &client_ref,
+                    engine,
+                    &q,
+                    time_filter,
+                ))
+                .catch_unwind()
+                .await;
                 let latency_ms = start.elapsed().as_millis() as u64;
+                let res = match res_unwind {
+                    Ok(r) => r,
+                    Err(p) => {
+                        let panic_msg = if let Some(s) = p.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else if let Some(s) = p.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "Unknown panic in engine dispatcher".to_string()
+                        };
+                        log::error!("[Nexus::Engines] Engine {:?} panicked: {}", engine, panic_msg);
+                        Err(NexusError::SerpParse {
+                            engine: engine.to_string(),
+                            message: format!("engine panicked during query: {}", panic_msg),
+                        })
+                    }
+                };
                 (engine, res, latency_ms)
             });
         }
 
         let deadline = Instant::now() + Duration::from_millis(self.policy.max_fanout_deadline_ms);
         let mut all_hits = Vec::new();
-        let mut engine_metrics = Vec::with_capacity(self.engines.len());
         let mut successful_queries = 0usize;
         let mut total_raw_hits = 0usize;
         let mut seen_domains = HashSet::new();
@@ -116,6 +193,8 @@ impl EngineFanout {
 
                     match res {
                         Ok(hits) => {
+                            let mut h = self.health.write().unwrap_or_else(|e| e.into_inner());
+                            h.record_success(engine, latency_ms);
                             successful_queries += 1;
                             total_raw_hits += hits.len();
                             log::info!(
@@ -155,8 +234,19 @@ impl EngineFanout {
                             }
                         }
                         Err(e) => {
+                            let err_str = e.to_string();
+                            let is_hard_block = {
+                                let lower = err_str.to_ascii_lowercase();
+                                lower.contains("captcha")
+                                    || lower.contains("challenge")
+                                    || lower.contains("403")
+                                    || lower.contains("429")
+                                    || lower.contains("blocked")
+                            };
+                            let mut h = self.health.write().unwrap_or_else(|e| e.into_inner());
+                            h.record_failure(engine, is_hard_block);
                             log::warn!(
-                                "[Nexus::Engines] {engine} query error after {}ms: {e}",
+                                "[Nexus::Engines] {engine} query error after {}ms: {err_str}",
                                 latency_ms
                             );
                             engine_metrics.push(EngineQueryMetrics {
@@ -164,7 +254,7 @@ impl EngineFanout {
                                 latency_ms,
                                 hit_count: 0,
                                 success: false,
-                                error: Some(e.to_string()),
+                                error: Some(err_str),
                             });
                         }
                     }
@@ -220,15 +310,32 @@ async fn dispatch_engine_query(
     query: &str,
     time_filter: TimeFilter,
 ) -> Result<Vec<EngineHit>, NexusError> {
+    if query == "__test_panic_engine__" {
+        if engine == Engine::Mojeek {
+            panic!("Simulated engine panic in Mojeek parser");
+        } else if engine == Engine::Duckduckgo {
+            return Ok(vec![EngineHit {
+                title: "Healthy Engine Result".to_string(),
+                url: "https://example.com/healthy".to_string(),
+                display_url: "https://example.com/healthy".to_string(),
+                snippet: "This result survived another engine's panic.".to_string(),
+                engine: Engine::Duckduckgo,
+            }]);
+        }
+    }
+
+    if query.starts_with("__test_hermetic_") {
+        return Ok(Vec::new());
+    }
+
     match engine {
         Engine::Duckduckgo => duckduckgo::query_duckduckgo(client, query, time_filter).await,
         Engine::Bing => bing::query_bing(client, query, time_filter).await,
         Engine::Yahoo => yahoo::query_yahoo(client, query, time_filter).await,
         Engine::Mojeek => mojeek::query_mojeek(client, query, time_filter).await,
         Engine::GoogleWml => google_wml::query_google_wml(client, query, time_filter).await,
-        Engine::Brave => Err(NexusError::InvalidConfiguration(
-            "Brave search engine is not configured".to_string(),
-        )),
+        Engine::Brave => brave::query_brave(client, query, time_filter).await,
+        Engine::Wikipedia => wikipedia::query_wikipedia(client, query).await,
     }
 }
 

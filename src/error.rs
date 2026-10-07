@@ -48,6 +48,10 @@ pub enum NexusError {
     #[error("Search scraper network error: {0}")]
     ScraperTransport(String),
 
+    /// Primp HTTP transport error encountered during network egress.
+    #[error("TLS egress error: {0}")]
+    Primp(#[from] primp::Error),
+
     /// Search engine SERP HTML structure was unrecognizable or blocked.
     #[error("SERP parsing error for engine '{engine}': {message}")]
     SerpParse {
