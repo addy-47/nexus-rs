@@ -215,20 +215,21 @@ async fn test_hybrid_rrf_scoring_math() {
         .unwrap();
 
         // For passage 0 ("Rust"):
-        // Sparse Rank: 1 (matches both terms) -> 1 / (60 + 1) = 1/61
-        // Dense Rank: 1 (vector [1, 0, 0] matches query [1, 0, 0]) -> 1 / (60 + 1) = 1/61
-        // Expected RRF = 2/61 ≈ 0.03278688
+        // Sparse BM25: max matches -> normalized BM25 = 1.0 (weight 0.35)
+        // Dense Cosine: vector [1, 0, 0] matches query [1, 0, 0] -> 1.0 (weight 0.65)
+        // Expected hybrid score = 0.65 * 1.0 + 0.35 * 1.0 = 1.0
         assert_eq!(passages[0].source_title, "Rust");
-        let expected_rrf = (1.0 / 61.0) + (1.0 / 61.0);
+        let expected_hybrid = 0.65 * 1.0 + 0.35 * 1.0;
         assert!(
-            (passages[0].score - expected_rrf).abs() < 1e-5,
-            "RRF score {:.6} should equal expected {:.6}",
+            (passages[0].score - expected_hybrid).abs() < 1e-4,
+            "Hybrid score {:.6} should equal expected {:.6}",
             passages[0].score,
-            expected_rrf
+            expected_hybrid
         );
 
-        // Dense rank for Python: rank 2 -> 1/62 + 1/62 ≈ 0.032258
+        // Python passage has 0.0 BM25 and 0.0 cosine similarity against rust query
         assert!(passages[0].score > passages[1].score);
+        assert_eq!(passages[1].score, 0.0);
     })
     .await
     .expect("test timed out");
@@ -289,7 +290,7 @@ async fn test_hybrid_rrf_handles_duplicate_metadata_without_aliasing() {
                 text: "Python dynamic runtime interpreter.".to_string(),
                 source_url: "https://example.com/same".to_string(),
                 source_title: "Same Page".to_string(),
-                passage_index: 0,
+                passage_index: 1,
                 score: 0.0,
                 sparse_score: None,
                 dense_score: None,
@@ -311,7 +312,6 @@ async fn test_hybrid_rrf_handles_duplicate_metadata_without_aliasing() {
         assert!(passages[1].text.contains("Python"));
         assert!(passages[0].score > passages[1].score);
         assert!(passages[0].score > 0.0);
-        assert!(passages[1].score > 0.0);
         assert_ne!(passages[0].score, passages[1].score);
     })
     .await

@@ -11,9 +11,15 @@ pub fn build_pinned_client(
     timeout: Duration,
 ) -> Result<primp::Client, NexusError> {
     let profiles = [
-        (primp::Impersonate::ChromeV146, primp::ImpersonateOS::Windows),
+        (
+            primp::Impersonate::ChromeV146,
+            primp::ImpersonateOS::Windows,
+        ),
         (primp::Impersonate::ChromeV146, primp::ImpersonateOS::MacOS),
-        (primp::Impersonate::FirefoxV146, primp::ImpersonateOS::Windows),
+        (
+            primp::Impersonate::FirefoxV146,
+            primp::ImpersonateOS::Windows,
+        ),
     ];
     let pick = rand::random_range(0..profiles.len());
     let (browser, os) = profiles[pick];

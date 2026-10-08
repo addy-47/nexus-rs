@@ -35,7 +35,10 @@ fn test_consecutive_failures_trigger_quarantine() {
 
     // Third failure (soft): triggers quarantine threshold (3)
     tracker.record_failure(engine, false);
-    assert!(tracker.is_quarantined(engine), "Must be quarantined after 3 soft failures");
+    assert!(
+        tracker.is_quarantined(engine),
+        "Must be quarantined after 3 soft failures"
+    );
 }
 
 #[test]
@@ -45,7 +48,10 @@ fn test_hard_block_immediately_quarantines() {
 
     // Hard block (e.g. CAPTCHA, 403 Forbidden, bot challenge)
     tracker.record_failure(engine, true);
-    assert!(tracker.is_quarantined(engine), "Hard block must trigger quarantine immediately");
+    assert!(
+        tracker.is_quarantined(engine),
+        "Hard block must trigger quarantine immediately"
+    );
 }
 
 #[test]
@@ -67,17 +73,27 @@ fn test_success_resets_consecutive_failures_and_updates_ewma() {
 
     // EWMA update: 0.8 * 500.0 + 0.2 * 200.0 = 400.0 + 40.0 = 440.0
     let ewma = tracker.get_ewma_latency(engine);
-    assert!((ewma - 440.0).abs() < 1e-4, "EWMA latency must blend smoothly, got {ewma}");
+    assert!(
+        (ewma - 440.0).abs() < 1e-4,
+        "EWMA latency must blend smoothly, got {ewma}"
+    );
 
     // Two more failures should NOT quarantine because counter was reset
     tracker.record_failure(engine, false);
     tracker.record_failure(engine, false);
-    assert!(!tracker.is_quarantined(engine), "Failure count must have been reset by earlier success");
+    assert!(
+        !tracker.is_quarantined(engine),
+        "Failure count must have been reset by earlier success"
+    );
 }
 
 #[test]
 fn test_quarantine_duration_constant() {
-    assert_eq!(QUARANTINE_DURATION, Duration::from_secs(600), "Quarantine TTL must be 10 minutes");
+    assert_eq!(
+        QUARANTINE_DURATION,
+        Duration::from_secs(600),
+        "Quarantine TTL must be 10 minutes"
+    );
 }
 
 /// B5 Panic Isolation killer:
@@ -90,6 +106,11 @@ async fn test_fanout_engine_panic_isolation_and_metric_reporting() {
     use nexus::engines::EngineFanout;
     use nexus::model::{FanoutPolicy, TimeFilter};
     use std::sync::{Arc, RwLock};
+
+    // Panic hook is env-gated in production dispatch (S7); enable so Mojeek
+    // actually panics instead of hitting the real network. Serial execution only.
+    // SAFETY: serial test execution; no other thread observes env here.
+    unsafe { std::env::set_var("NEXUS_TEST_HOOKS", "1") };
 
     let health = Arc::new(RwLock::new(EngineHealthTracker::new()));
     let fanout = EngineFanout::with_health(
@@ -110,7 +131,10 @@ async fn test_fanout_engine_panic_isolation_and_metric_reporting() {
         .expect("query_all must NOT unwind when an engine panics (B5 catch_unwind isolation)");
 
     // Healthy engine hits must survive
-    assert!(!outcome.hits.is_empty(), "Healthy engine hits must survive another engine's panic");
+    assert!(
+        !outcome.hits.is_empty(),
+        "Healthy engine hits must survive another engine's panic"
+    );
     assert_eq!(outcome.hits[0].engine, Engine::Duckduckgo);
 
     // Panicking engine must be recorded in metrics as unsuccessful with panic message
@@ -119,7 +143,10 @@ async fn test_fanout_engine_panic_isolation_and_metric_reporting() {
         .iter()
         .find(|m| m.engine == Engine::Mojeek)
         .expect("Mojeek metric must be present");
-    assert!(!mojeek_metric.success, "Panicking engine must be marked unsuccessful in metrics");
+    assert!(
+        !mojeek_metric.success,
+        "Panicking engine must be marked unsuccessful in metrics"
+    );
     let err_msg = mojeek_metric.error.as_deref().unwrap_or("");
     assert!(
         err_msg.contains("panicked"),
@@ -134,4 +161,3 @@ async fn test_fanout_engine_panic_isolation_and_metric_reporting() {
         "Failure must be recorded in health tracker"
     );
 }
-

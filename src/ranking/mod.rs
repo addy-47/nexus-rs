@@ -37,9 +37,7 @@ pub async fn rank_passages(
     let start = std::time::Instant::now();
     let outcome =
         rank_passages_inner(query, passages, mode, embedder, policy, consensus_urls).await?;
-    apply_entity_coverage_penalty(query, passages);
-    passages.sort_by(|a, b| b.score.total_cmp(&a.score));
-    calibrate_and_filter(passages, mode, policy);
+    calibrate_and_filter(query, passages, mode, policy);
     Ok(RankingMetricsOutcome {
         total_ranking_ms: start.elapsed().as_millis() as u64,
         ..outcome
@@ -48,27 +46,41 @@ pub async fn rank_passages(
 
 /// DonSeTch entity-coverage penalty:
 /// When a query contains concrete anchor entities (e.g. versions "3.13", years "2024",
-/// model identifiers "llama-3", or quoted spans), passages whose title and text fail
-/// to cover any query anchor receive a 0.3x score penalty.
+/// model identifiers "llama-3", acronyms "WML", or quoted spans), passages whose title
+/// and text fail to cover any query anchor receive a 0.3x score penalty and are capped
+/// below min_score so they cannot masquerade as relevant evidence.
 /// Abstract queries with zero anchors incur zero penalty.
-pub fn apply_entity_coverage_penalty(query: &str, passages: &mut [ScoredPassage]) {
+pub fn apply_entity_coverage_penalty(query: &str, passages: &mut [ScoredPassage], min_score: f32) {
     let anchors = crate::extraction::quality::entity_anchors(query);
-    if anchors.is_empty() {
+    let check_tokens = if !anchors.is_empty() {
+        anchors
+    } else {
+        crate::extraction::quality::substantive_query_tokens(query)
+    };
+    if check_tokens.is_empty() {
         return;
     }
 
     for p in passages.iter_mut() {
         let haystack = format!("{} {}", p.source_title, p.text).to_ascii_lowercase();
-        let matches_any = anchors.iter().any(|a| haystack.contains(a));
+        let matches_any = check_tokens.iter().any(|a| haystack.contains(a));
         if !matches_any {
             p.score *= 0.3;
+            if min_score > 0.0 {
+                p.score = p.score.min((min_score - 0.02).max(0.0));
+            }
         }
     }
 }
 
 /// Calibrates relevance scores to [0, 1] without min-max distortion, enforces the min_score
 /// relevance floor, and deduplicates near-duplicate passages.
-fn calibrate_and_filter(passages: &mut Vec<ScoredPassage>, mode: RankingMode, policy: &RankingPolicy) {
+fn calibrate_and_filter(
+    query: &str,
+    passages: &mut Vec<ScoredPassage>,
+    mode: RankingMode,
+    policy: &RankingPolicy,
+) {
     if passages.is_empty() {
         return;
     }
@@ -87,7 +99,7 @@ fn calibrate_and_filter(passages: &mut Vec<ScoredPassage>, mode: RankingMode, po
                 }
             } else {
                 for p in passages.iter_mut() {
-                    p.score = 1.0;
+                    p.score = 0.0;
                 }
             }
         }
@@ -99,16 +111,17 @@ fn calibrate_and_filter(passages: &mut Vec<ScoredPassage>, mode: RankingMode, po
             }
         }
         RankingMode::Hybrid => {
-            // Calibrate RRF score against theoretical maximum (rank 1 in both sparse and dense,
-            // with consensus multiplier).
-            let max_rrf = (1.0 / 61.0 + 1.0 / 61.0) * policy.consensus_multiplier;
-            if max_rrf > f32::EPSILON {
-                for p in passages.iter_mut() {
-                    p.score = (p.score / max_rrf).clamp(0.0, 1.0);
-                }
+            // Direct hybrid score is already calibrated combining dense cosine similarity [0, 1]
+            // and normalized BM25 [0, 1]. Clamp directly into [0.0, 1.0].
+            for p in passages.iter_mut() {
+                p.score = p.score.clamp(0.0, 1.0);
             }
         }
     }
+
+    // Apply entity coverage penalty after mode-specific score normalization
+    apply_entity_coverage_penalty(query, passages, policy.min_score);
+    passages.sort_by(|a, b| b.score.total_cmp(&a.score));
 
     // Enforce absolute min_score floor
     if policy.min_score <= 0.0 {

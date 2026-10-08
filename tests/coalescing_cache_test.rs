@@ -27,7 +27,6 @@ async fn test_empty_query_returns_empty_result_instantly() {
         max_candidates: 3,
         chunk_size_words: 150,
         chunk_overlap_words: 30,
-        focus: None,
         ..Default::default()
     };
 
@@ -40,7 +39,10 @@ async fn test_empty_query_returns_empty_result_instantly() {
 async fn test_builder_configuration_validation() {
     // Empty engine list must be rejected
     let empty_res = NexusSearch::builder().with_engines(vec![]).build();
-    assert!(empty_res.is_err(), "Empty engines list must fail validation");
+    assert!(
+        empty_res.is_err(),
+        "Empty engines list must fail validation"
+    );
 
     // Zero timeout must be rejected
     let zero_timeout = NexusSearch::builder()
@@ -50,7 +52,10 @@ async fn test_builder_configuration_validation() {
 
     // Zero max response bytes must be rejected
     let zero_bytes = NexusSearch::builder().with_max_response_bytes(0).build();
-    assert!(zero_bytes.is_err(), "Zero response bytes must fail validation");
+    assert!(
+        zero_bytes.is_err(),
+        "Zero response bytes must fail validation"
+    );
 }
 
 /// B3 Mutation 1 killer:
@@ -64,7 +69,11 @@ async fn test_in_flight_guard_cleans_up_on_drop_when_aborted() {
     {
         let (tx, _rx) = tokio::sync::broadcast::channel(4);
         in_flight.lock().await.insert(key.clone(), tx);
-        assert_eq!(in_flight.lock().await.len(), 1, "Must contain inserted key initially");
+        assert_eq!(
+            in_flight.lock().await.len(),
+            1,
+            "Must contain inserted key initially"
+        );
 
         // Guard is armed but dropped without calling disarm()
         let _guard = InFlightGuard::new(Arc::clone(&in_flight), key.clone());
@@ -90,38 +99,39 @@ async fn test_follower_bounded_wait_times_out_on_hung_leader() {
         .build()
         .expect("Client builder failed");
 
-    // Construct exact cache key used for "__test_hermetic_hung_leader_query"
-    let cache_key = format!(
-        "{}:{}:{:?}:{:?}:{}:{}:{}:{:?}",
-        "__test_hermetic_hung_leader_query",
-        3,
-        TimeFilter::Any,
-        RankingMode::Sparse,
-        150,
-        30,
-        524288,
-        ""
-    );
+    // Test hooks are env-gated in production dispatch (S7); enable for this test
+    // so the hermetic bypass fires instead of the real network. Safe under the
+    // repo-mandated --test-threads=1 (serial execution).
+    // SAFETY: serial test execution; no other thread observes env here.
+    unsafe { std::env::set_var("NEXUS_TEST_HOOKS", "1") };
 
-    // Insert a leader broadcast channel that NEVER sends anything
-    let (tx, _rx) = tokio::sync::broadcast::channel(4);
-    client.in_flight_map().lock().await.insert(cache_key.clone(), tx);
-
-    let options = NexusSearchOptions {
+    let hung_options = NexusSearchOptions {
         time_filter: TimeFilter::Any,
         ranking_mode: RankingMode::Sparse,
         max_candidates: 3,
         chunk_size_words: 150,
         chunk_overlap_words: 30,
         fetch_timeout_ms: 80, // Request short 80ms follower timeout
-        focus: None,
         ..Default::default()
     };
+    // Canonical key shared with production — never hand-build (an 8-field key once
+    // diverged from production's 7 fields and turned the follower into a leader).
+    let cache_key = NexusSearch::cache_key_for("__test_hermetic_hung_leader_query", &hung_options);
+
+    // Insert a leader broadcast channel that NEVER sends anything
+    let (tx, _rx) = tokio::sync::broadcast::channel(4);
+    client
+        .in_flight_map()
+        .lock()
+        .await
+        .insert(cache_key.clone(), tx);
 
     let start = std::time::Instant::now();
-    // Follower joins in-flight wave, waits with bounded timeout (80ms), times out and proceeds
-    // With unbounded wait (Mutant 2), this hangs and tokio::time::timeout fires at 400ms
-    let search_fut = client.search("__test_hermetic_hung_leader_query", &options);
+    // Follower joins in-flight wave, waits with bounded timeout (80ms), times out and proceeds.
+    // The hermetic bypass (hooks enabled above) makes the fallback uncached search
+    // return empty immediately — no real network, deterministic under 400ms.
+    // With unbounded wait (Mutant 2), this hangs and tokio::time::timeout fires at 400ms.
+    let search_fut = client.search("__test_hermetic_hung_leader_query", &hung_options);
     let outcome = tokio::time::timeout(Duration::from_millis(400), search_fut).await;
 
     assert!(
@@ -146,20 +156,24 @@ async fn test_coalescing_follower_receives_leader_result() {
         .build()
         .expect("Client builder failed");
 
-    let cache_key = format!(
-        "{}:{}:{:?}:{:?}:{}:{}:{}:{:?}",
-        "coalesced_broadcast_query",
-        3,
-        TimeFilter::Any,
-        RankingMode::Sparse,
-        150,
-        30,
-        524288,
-        ""
-    );
+    let delivery_options = NexusSearchOptions {
+        time_filter: TimeFilter::Any,
+        ranking_mode: RankingMode::Sparse,
+        max_candidates: 3,
+        chunk_size_words: 150,
+        chunk_overlap_words: 30,
+        fetch_timeout_ms: 1000,
+        ..Default::default()
+    };
+    // Canonical key shared with production — never hand-build.
+    let cache_key = NexusSearch::cache_key_for("coalesced_broadcast_query", &delivery_options);
 
     let (tx, _rx) = tokio::sync::broadcast::channel(4);
-    client.in_flight_map().lock().await.insert(cache_key.clone(), tx.clone());
+    client
+        .in_flight_map()
+        .lock()
+        .await
+        .insert(cache_key.clone(), tx.clone());
 
     let leader_result = NexusSearchResult {
         raw_pages: vec![nexus::RawPage {
@@ -186,20 +200,9 @@ async fn test_coalescing_follower_receives_leader_result() {
         let _ = tx.send(Ok(leader_res_clone));
     });
 
-    let options = NexusSearchOptions {
-        time_filter: TimeFilter::Any,
-        ranking_mode: RankingMode::Sparse,
-        max_candidates: 3,
-        chunk_size_words: 150,
-        chunk_overlap_words: 30,
-        fetch_timeout_ms: 1000,
-        focus: None,
-        ..Default::default()
-    };
-
     // Follower executes search() - must receive the broadcasted leader result via coalescing
     let follower_outcome = client
-        .search("coalesced_broadcast_query", &options)
+        .search("coalesced_broadcast_query", &delivery_options)
         .await
         .expect("Follower search must receive broadcasted leader result");
 
@@ -208,8 +211,7 @@ async fn test_coalescing_follower_receives_leader_result() {
     assert_eq!(follower_outcome.scored_passages.len(), 1);
     assert_eq!(follower_outcome.scored_passages[0].score, 0.95);
     assert_eq!(
-        follower_outcome.scored_passages[0].text,
-        leader_result.scored_passages[0].text,
+        follower_outcome.scored_passages[0].text, leader_result.scored_passages[0].text,
         "Follower must receive exact leader result bytes"
     );
 }
@@ -244,26 +246,5 @@ async fn test_cache_recovers_from_mutex_poisoning() {
     assert!(
         non_empty_res.is_ok() || non_empty_res.is_err(),
         "search() must not panic when querying poisoned cache"
-    );
-}
-
-#[tokio::test]
-async fn test_focus_passage_extraction() {
-    let client = NexusSearch::builder()
-        .with_engines(vec![nexus::Engine::Duckduckgo])
-        .build()
-        .expect("Client builder failed");
-
-    let raw_page = nexus::RawPage {
-        url: "https://example.com/rust".to_string(),
-        title: "Rust Systems Programming".to_string(),
-        markdown: "Introduction to systems programming.\n\nConcurrency and memory safety in Rust with borrow checker rules.\n\nWebAssembly target details.".to_string(),
-    };
-
-    let focused = client.extract_focused_passages(&raw_page, Some("borrow checker"), 5);
-    assert!(!focused.is_empty(), "Focused extraction should yield passages");
-    assert!(
-        focused[0].text.to_lowercase().contains("borrow checker"),
-        "Top focused passage must contain the query terms"
     );
 }

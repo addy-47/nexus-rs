@@ -20,7 +20,10 @@ pub fn deduplicate_passages(passages: Vec<ScoredPassage>, threshold: f32) -> Vec
         let cand_tokens: HashSet<String> = candidate
             .text
             .split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
             .filter(|w| w.len() >= 2)
             .collect();
 
@@ -67,9 +70,18 @@ mod tests {
 
     #[test]
     fn test_deduplicate_identical_and_near_identical() {
-        let p1 = dummy_passage("Rust is a systems programming language focused on safety and speed.", 0.95);
-        let p2 = dummy_passage("Rust is a systems programming language focused on safety and speed!", 0.90);
-        let p3 = dummy_passage("Python is a dynamic programming language focused on readability.", 0.80);
+        let p1 = dummy_passage(
+            "Rust is a systems programming language focused on safety and speed.",
+            0.95,
+        );
+        let p2 = dummy_passage(
+            "Rust is a systems programming language focused on safety and speed!",
+            0.90,
+        );
+        let p3 = dummy_passage(
+            "Python is a dynamic programming language focused on readability.",
+            0.80,
+        );
 
         let input = vec![p1, p2, p3];
         let deduped = deduplicate_passages(input, DEFAULT_DEDUPE_JACCARD_THRESHOLD);

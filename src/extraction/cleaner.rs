@@ -29,7 +29,11 @@ fn fast_scan_tag(html: &str, tag: &str) -> Option<String> {
     // char (observed live: a PDF served as a search result). Floor to the
     // boundary — behavior is otherwise identical.
     let search_slice = if html.len() > 65536 {
-        &html[..html.floor_char_boundary(65536)]
+        let mut idx = 65536;
+        while idx > 0 && !html.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        &html[..idx]
     } else {
         html
     };

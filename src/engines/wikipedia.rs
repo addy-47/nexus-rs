@@ -53,12 +53,11 @@ pub async fn query_wikipedia(
 
 /// Parses Wikipedia REST search JSON payload into structured engine hits.
 pub fn parse_wikipedia_json(json_bytes: &[u8]) -> Result<Vec<EngineHit>, NexusError> {
-    let wiki_resp: WikiResponse = serde_json::from_slice(json_bytes).map_err(|e| {
-        NexusError::SerpParse {
+    let wiki_resp: WikiResponse =
+        serde_json::from_slice(json_bytes).map_err(|e| NexusError::SerpParse {
             engine: "wikipedia".to_string(),
             message: format!("Failed to parse Wikipedia JSON response: {e}"),
-        }
-    })?;
+        })?;
 
     let mut hits = Vec::new();
     for page in wiki_resp.pages {

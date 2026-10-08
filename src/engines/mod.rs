@@ -3,10 +3,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use futures_util::{
-    stream::{FuturesUnordered, StreamExt},
-    FutureExt,
-};
+use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use tokio::time::Instant;
 
 use crate::error::NexusError;
@@ -106,6 +103,16 @@ impl EngineFanout {
         query: &str,
         time_filter: TimeFilter,
     ) -> Result<FanoutOutcome, NexusError> {
+        self.query_all_with_deadline(query, time_filter, None).await
+    }
+
+    /// Queries all enabled engines concurrently with an explicit deadline and adaptive quorum early-exit.
+    pub async fn query_all_with_deadline(
+        &self,
+        query: &str,
+        time_filter: TimeFilter,
+        deadline_override_ms: Option<u64>,
+    ) -> Result<FanoutOutcome, NexusError> {
         if self.engines.is_empty() {
             return Ok(FanoutOutcome::default());
         }
@@ -137,14 +144,10 @@ impl EngineFanout {
             let q = query.to_owned();
             tasks.push(async move {
                 let start = std::time::Instant::now();
-                let res_unwind = AssertUnwindSafe(dispatch_engine_query(
-                    &client_ref,
-                    engine,
-                    &q,
-                    time_filter,
-                ))
-                .catch_unwind()
-                .await;
+                let res_unwind =
+                    AssertUnwindSafe(dispatch_engine_query(&client_ref, engine, &q, time_filter))
+                        .catch_unwind()
+                        .await;
                 let latency_ms = start.elapsed().as_millis() as u64;
                 let res = match res_unwind {
                     Ok(r) => r,
@@ -156,7 +159,11 @@ impl EngineFanout {
                         } else {
                             "Unknown panic in engine dispatcher".to_string()
                         };
-                        log::error!("[Nexus::Engines] Engine {:?} panicked: {}", engine, panic_msg);
+                        log::error!(
+                            "[Nexus::Engines] Engine {:?} panicked: {}",
+                            engine,
+                            panic_msg
+                        );
                         Err(NexusError::SerpParse {
                             engine: engine.to_string(),
                             message: format!("engine panicked during query: {}", panic_msg),
@@ -167,9 +174,11 @@ impl EngineFanout {
             });
         }
 
-        let deadline = Instant::now() + Duration::from_millis(self.policy.max_fanout_deadline_ms);
+        let deadline_ms = deadline_override_ms.unwrap_or(self.policy.max_fanout_deadline_ms);
+        let deadline = Instant::now() + Duration::from_millis(deadline_ms);
         let mut all_hits = Vec::new();
         let mut successful_queries = 0usize;
+        let mut successful_web_queries = 0usize;
         let mut total_raw_hits = 0usize;
         let mut seen_domains = HashSet::new();
         let mut seen_canonical = HashSet::new();
@@ -179,7 +188,7 @@ impl EngineFanout {
             if timeout_remaining.is_zero() {
                 log::info!(
                     "[Nexus::Engines] Fanout deadline reached ({}ms). Proceeding with {} successful engine responses.",
-                    self.policy.max_fanout_deadline_ms,
+                    deadline_ms,
                     successful_queries
                 );
                 break;
@@ -196,6 +205,9 @@ impl EngineFanout {
                             let mut h = self.health.write().unwrap_or_else(|e| e.into_inner());
                             h.record_success(engine, latency_ms);
                             successful_queries += 1;
+                            if engine != Engine::Wikipedia {
+                                successful_web_queries += 1;
+                            }
                             total_raw_hits += hits.len();
                             log::info!(
                                 "[Nexus::Engines] {engine} yielded {} hits in {}ms",
@@ -219,14 +231,14 @@ impl EngineFanout {
                             }
                             all_hits.push(hits);
 
-                            // Check adaptive quorum early-exit condition:
-                            if successful_queries >= self.policy.min_reporting_engines
+                            // Check adaptive quorum early-exit condition (Wikipedia hits do not satisfy web engine quorum):
+                            if successful_web_queries >= self.policy.min_reporting_engines
                                 && seen_domains.len() >= self.policy.min_distinct_domains
                                 && seen_canonical.len() >= self.policy.min_candidate_hits
                             {
                                 log::info!(
-                                    "[Nexus::Engines] Early-exit quorum satisfied (reporting_engines={}, distinct_domains={}, candidate_hits={}). Dropping tail engine queries.",
-                                    successful_queries,
+                                    "[Nexus::Engines] Early-exit quorum satisfied (reporting_web_engines={}, distinct_domains={}, candidate_hits={}). Dropping tail engine queries.",
+                                    successful_web_queries,
                                     seen_domains.len(),
                                     seen_canonical.len()
                                 );
@@ -262,7 +274,7 @@ impl EngineFanout {
                 _ = tokio::time::sleep(timeout_remaining) => {
                     log::info!(
                         "[Nexus::Engines] Fanout deadline timeout elapsed ({}ms). Proceeding with {} completed engines.",
-                        self.policy.max_fanout_deadline_ms,
+                        deadline_ms,
                         successful_queries
                     );
                     break;
@@ -310,22 +322,24 @@ async fn dispatch_engine_query(
     query: &str,
     time_filter: TimeFilter,
 ) -> Result<Vec<EngineHit>, NexusError> {
-    if query == "__test_panic_engine__" {
-        if engine == Engine::Mojeek {
-            panic!("Simulated engine panic in Mojeek parser");
-        } else if engine == Engine::Duckduckgo {
-            return Ok(vec![EngineHit {
-                title: "Healthy Engine Result".to_string(),
-                url: "https://example.com/healthy".to_string(),
-                display_url: "https://example.com/healthy".to_string(),
-                snippet: "This result survived another engine's panic.".to_string(),
-                engine: Engine::Duckduckgo,
-            }]);
+    if std::env::var_os("NEXUS_TEST_HOOKS").is_some() {
+        if query == "__test_panic_engine__" {
+            if engine == Engine::Mojeek {
+                panic!("Simulated engine panic in Mojeek parser");
+            } else if engine == Engine::Duckduckgo {
+                return Ok(vec![EngineHit {
+                    title: "Healthy Engine Result".to_string(),
+                    url: "https://example.com/healthy".to_string(),
+                    display_url: "https://example.com/healthy".to_string(),
+                    snippet: "This result survived another engine's panic.".to_string(),
+                    engine: Engine::Duckduckgo,
+                }]);
+            }
         }
-    }
 
-    if query.starts_with("__test_hermetic_") {
-        return Ok(Vec::new());
+        if query.starts_with("__test_hermetic_") {
+            return Ok(Vec::new());
+        }
     }
 
     match engine {

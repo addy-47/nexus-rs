@@ -111,6 +111,24 @@ impl NexusSearch {
         Arc::clone(&self.in_flight)
     }
 
+    /// Canonical cache/coalescing key. Single source of truth shared by `search()`
+    /// and integration tests — hand-built keys in tests silently diverge (a coalescing
+    /// test once planted under an 8-field key while production used 7, turning the
+    /// follower into a leader that hit the real network).
+    #[doc(hidden)]
+    pub fn cache_key_for(query: &str, options: &NexusSearchOptions) -> String {
+        format!(
+            "{}:{}:{:?}:{:?}:{}:{}:{}",
+            query.trim().to_lowercase(),
+            options.max_candidates,
+            options.time_filter,
+            options.ranking_mode,
+            options.chunk_size_words,
+            options.chunk_overlap_words,
+            options.max_response_bytes,
+        )
+    }
+
     #[doc(hidden)]
     pub fn poison_cache_for_test(&self) {
         let cache = Arc::clone(&self.query_cache);
@@ -137,29 +155,6 @@ impl NexusSearch {
         }
     }
 
-    /// Extracts focused passages from a raw page using chunking and lexical ranking.
-    pub fn extract_focused_passages(
-        &self,
-        page: &RawPage,
-        focus: Option<&str>,
-        max_passages: usize,
-    ) -> Vec<ScoredPassage> {
-        let mut passages = chunking::passage::chunk_document_passages(
-            &page.markdown,
-            &page.url,
-            &page.title,
-            150,
-            30,
-        );
-        if let Some(focus_query) = focus {
-            let focus_trimmed = focus_query.trim();
-            if !focus_trimmed.is_empty() {
-                ranking::bm25::rank_bm25(focus_trimmed, &mut passages);
-            }
-        }
-        passages.into_iter().take(max_passages).collect()
-    }
-
     /// Executes end-to-end multi-engine search, extraction, and tri-mode ranking with caching and coalescing.
     pub async fn search(
         &self,
@@ -178,17 +173,7 @@ impl NexusSearch {
             });
         }
 
-        let cache_key = format!(
-            "{}:{}:{:?}:{:?}:{}:{}:{}:{:?}",
-            trimmed_query.to_lowercase(),
-            options.max_candidates,
-            options.time_filter,
-            options.ranking_mode,
-            options.chunk_size_words,
-            options.chunk_overlap_words,
-            options.max_response_bytes,
-            options.focus.as_deref().unwrap_or(""),
-        );
+        let cache_key = Self::cache_key_for(trimmed_query, options);
 
         // 1. Check query cache
         {
@@ -215,22 +200,27 @@ impl NexusSearch {
             }
         };
 
-        if !is_leader
-            && let Some(mut rx) = subscriber
-        {
+        if !is_leader && let Some(mut rx) = subscriber {
             log::debug!("[Nexus::Coalesce] Joined in-flight search wave for '{trimmed_query}'");
             let wait_timeout = Duration::from_millis(options.fetch_timeout_ms.clamp(50, 5000));
             match tokio::time::timeout(wait_timeout, rx.recv()).await {
                 Ok(Ok(Ok(cached))) => return Ok(cached),
                 Ok(Ok(Err(err))) => return Err(NexusError::ScraperTransport(err)),
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
-                    log::warn!("[Nexus::Coalesce] Broadcast channel lagged ({n}) for '{trimmed_query}', falling back to uncached search");
+                    log::warn!(
+                        "[Nexus::Coalesce] Broadcast channel lagged ({n}) for '{trimmed_query}', falling back to uncached search"
+                    );
                 }
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
-                    log::warn!("[Nexus::Coalesce] Broadcast channel closed for '{trimmed_query}', falling back to uncached search");
+                    log::warn!(
+                        "[Nexus::Coalesce] Broadcast channel closed for '{trimmed_query}', falling back to uncached search"
+                    );
                 }
                 Err(_timeout) => {
-                    log::warn!("[Nexus::Coalesce] Wait exceeded {:?} for '{trimmed_query}', falling back to uncached search", wait_timeout);
+                    log::warn!(
+                        "[Nexus::Coalesce] Wait exceeded {:?} for '{trimmed_query}', falling back to uncached search",
+                        wait_timeout
+                    );
                 }
             }
         }
@@ -339,7 +329,11 @@ impl NexusSearch {
         let fanout_start = std::time::Instant::now();
         let fanout_outcome = self
             .fanout
-            .query_all(trimmed_query, options.time_filter)
+            .query_all_with_deadline(
+                trimmed_query,
+                options.time_filter,
+                options.fanout_deadline_ms,
+            )
             .await?;
         let fanout_total_ms = fanout_start.elapsed().as_millis() as u64;
 
@@ -390,8 +384,39 @@ impl NexusSearch {
             )
             .await?;
 
+        // Answer-presence verification (mechanism B guard): the correct page can be
+        // fetched and ranked while the answer sentence never survives chunk selection.
+        // Record the verdict on metrics so callers report the truth instead of letting
+        // the model fill the gap from parametric memory.
+        let answer_shape = crate::answer_presence::classify_answer_shape(trimmed_query);
+        let answer_presence = match answer_shape {
+            crate::answer_presence::AnswerShape::NotValueSeeking => None,
+            _ => {
+                let delivered: Vec<String> = passages
+                    .iter()
+                    .map(|p| format!("{} {}", p.source_title, p.text))
+                    .collect();
+                let verdict = crate::answer_presence::verify_answer_presence(
+                    trimmed_query,
+                    answer_shape,
+                    &delivered,
+                );
+                if verdict == crate::answer_presence::AnswerPresence::Absent {
+                    log::warn!(
+                        "[Nexus::AnswerPresence] Query='{}' shape={:?} delivered {} passages but none carry a candidate answer",
+                        trimmed_query,
+                        answer_shape,
+                        passages.len()
+                    );
+                }
+                Some(verdict)
+            }
+        };
+
         let total_pipeline_ms = start_time.elapsed().as_millis() as u64;
         let metrics = NexusSearchMetrics {
+            answer_presence,
+            answer_shape: Some(answer_shape),
             total_pipeline_ms,
             fanout_total_ms,
             engines: fanout_outcome.metrics,
@@ -573,10 +598,6 @@ impl NexusSearch {
             options.chunk_overlap_words,
         );
         let chunking_total_ms = chunk_start.elapsed().as_millis() as u64;
-
-        if let Some(focus) = options.focus.as_deref().filter(|f| !f.trim().is_empty()) {
-            ranking::bm25::rank_bm25(focus.trim(), &mut passages);
-        }
 
         let embedder_ref = self.embedder.as_ref().map(|arc| arc.as_ref());
         let ranking_outcome = ranking::rank_passages(

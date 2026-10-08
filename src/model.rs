@@ -2,6 +2,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::answer_presence::{AnswerPresence, AnswerShape};
+
 /// Supported keyless search engine providers.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -148,6 +150,12 @@ pub struct PageExtractMetrics {
 /// Comprehensive latency and throughput metrics across all pipeline stages.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct NexusSearchMetrics {
+    /// Whether the delivered passages plausibly contain the answer the query asked for.
+    /// `None` when the query is not value-seeking and no verification applies.
+    /// Callers must not report retrieval success when this is `Some(Absent)`.
+    pub answer_presence: Option<AnswerPresence>,
+    /// The answer shape inferred from the query, for telemetry.
+    pub answer_shape: Option<AnswerShape>,
     /// Total search pipeline execution duration in milliseconds.
     pub total_pipeline_ms: u64,
     /// Stage 1A: Total engine fanout duration in milliseconds.
@@ -212,8 +220,8 @@ pub struct NexusSearchOptions {
     pub fetch_timeout_ms: u64,
     /// Maximum response bytes downloaded per individual candidate page.
     pub max_response_bytes: usize,
-    /// Optional lexical focus query for passage extraction.
-    pub focus: Option<String>,
+    /// Optional dynamic deadline override for the search engine fanout wave in milliseconds.
+    pub fanout_deadline_ms: Option<u64>,
 }
 
 /// Adaptive multi-engine fanout and early-exit quorum policy.
@@ -253,7 +261,8 @@ pub struct RankingPolicy {
     /// passage to survive ranking. P0-8: raw RRF scores cluster in [0.030, 0.033]
     /// by construction (1/(60+1)+1/(60+1)), so they cannot discriminate garbage
     /// from evidence. Normalization makes the top passage 1.0; this floor then
-    /// rejects the tail. Default 0.0 preserves all passages until tuned.
+    /// rejects the tail. Default 0.12; 0.0 disables the floor (not recommended —
+    /// normalized noise will be delivered as evidence).
     pub min_score: f32,
 }
 
@@ -294,7 +303,7 @@ impl Default for NexusSearchOptions {
             chunk_overlap_words: 30,
             fetch_timeout_ms: 4000,
             max_response_bytes: 524_288,
-            focus: None,
+            fanout_deadline_ms: None,
         }
     }
 }

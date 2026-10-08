@@ -261,7 +261,9 @@ async fn test_wikipedia_json_parsing() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].engine, Engine::Wikipedia);
     assert_eq!(hits[0].title, "Rust (programming language)");
-    assert_eq!(hits[0].url, "https://en.wikipedia.org/wiki/Rust_(programming_language)");
+    assert_eq!(
+        hits[0].url,
+        "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+    );
     assert!(hits[0].snippet.contains("multi-paradigm"));
 }
-

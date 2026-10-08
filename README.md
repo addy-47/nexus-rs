@@ -12,9 +12,10 @@ High-performance, standalone, zero-bloat Rust library designed for agentic web s
 ## Overview
 
 Modern AI agents and voice assistants require web retrieval that is **fast**, **safe**, and **token-efficient**:
-1. **Keyless Multi-Provider Search**: Concurrently query web providers (DuckDuckGo, Bing, Yahoo, Mojeek) without third-party API keys or rate-limited intermediaries.
-2. **Hardened Egress Defense**: Web crawlers executing LLM-prompted searches are prime targets for SSRF, DNS rebinding, and metadata exfiltration attacks. `nexuss` enforces pre-flight IP validation and socket pinning on every request and redirect hop.
-3. **Decoupled Document & Passage Lifecycle**: Full web pages often contain tens of thousands of tokens. `nexuss` extracts clean Markdown, deterministically segments articles into overlapping passages, and scores them using BM25, neural vector embeddings, or Reciprocal Rank Fusion ($k=60$). Both raw documents and scored passages are returned, allowing host runtimes to dynamically enforce context token budgets and instant in-session pagination.
+1. **Keyless Multi-Provider Search**: Concurrently query web providers (DuckDuckGo, Bing, Yahoo, Mojeek, Brave, Wikipedia) without third-party API keys or rate-limited intermediaries. Per-engine health tracking and a circuit breaker quarantine an unhealthy provider instead of letting it stall every query.
+2. **Answer-Presence Verification**: Ranking can surface the correct page while the answer sentence never survives chunk selection, leaving topical background that reads as success. `answer_presence` classifies what a query is asking for and reports whether any delivered passage actually carries a candidate answer, so hosts can refuse to present retrieval as successful when it was not.
+3. **Hardened Egress Defense**: Web crawlers executing LLM-prompted searches are prime targets for SSRF, DNS rebinding, and metadata exfiltration attacks. `nexuss` enforces pre-flight IP validation and socket pinning on every request and redirect hop.
+4. **Decoupled Document & Passage Lifecycle**: Full web pages often contain tens of thousands of tokens. `nexuss` extracts clean Markdown, deterministically segments articles into overlapping passages, and scores them using BM25, neural vector embeddings, or a weighted hybrid of dense cosine similarity and normalized BM25. Both raw documents and scored passages are returned, allowing host runtimes to dynamically enforce context token budgets and instant in-session pagination.
 
 ---
 
@@ -27,7 +28,7 @@ flowchart TD
     end
 
     subgraph Stage1["Stage 1: Multi-Engine Fanout & Egress"]
-        Fanout["Engine Fanout\n(DuckDuckGo, Bing, Yahoo, Mojeek)\nvia TLS Impersonation (primp)"]
+        Fanout["Engine Fanout\n(DuckDuckGo, Bing, Yahoo, Mojeek,\nBrave, Wikipedia)\nvia TLS Impersonation (primp)"]
         Egress["Hardened Egress Fetcher\n(DNS Pinning + RFC1918 Block + 5-Hop Redirect Loop)\nvia reqwest 0.13"]
         Extractor["DOM Parser & HTML-to-Markdown\n(scraper + html-to-markdown-rs)"]
     end
@@ -37,7 +38,7 @@ flowchart TD
         Ranker{"Ranking Strategy"}
         BM25["BM25 Lexical Scorer\n(k1=1.5, b=0.75)"]
         Dense["Dense Cosine Scorer\n(via TextEmbedder trait)"]
-        RRF["Reciprocal Rank Fusion\n(k=60 fusion)"]
+        RRF["Hybrid Scorer\n(65% dense cosine + 35% BM25)"]
     end
 
     subgraph Envelope["Result Envelope"]
@@ -121,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 2. Neural & Hybrid Ranking (RRF $k=60$)
+### 2. Neural & Hybrid Ranking (Dense Cosine + Normalized BM25)
 
 Dense and hybrid ranking are decoupled through the `TextEmbedder` trait. The host application provides its own model inference (via ONNX, Candle, GGUF, or remote API):
 
@@ -156,12 +157,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let options = NexusSearchOptions {
-        ranking_mode: RankingMode::Hybrid, // Combines BM25 + Dense Cosine via RRF
+        ranking_mode: RankingMode::Hybrid, // 65% dense cosine + 35% normalized BM25
         ..Default::default()
     };
 
     let result = engine.search("memory safety in systems programming", &options).await?;
-    // result.scored_passages contains passages ranked by RRF score
+    // result.scored_passages contains passages ranked by hybrid score
     Ok(())
 }
 ```
@@ -176,7 +177,7 @@ Run the included examples from the repository:
 # Run basic multi-engine search and BM25 ranking
 cargo run --example basic_search
 
-# Run hybrid RRF search with a custom TextEmbedder implementation
+# Run hybrid search with a custom TextEmbedder implementation
 cargo run --example hybrid_search
 ```
 
@@ -189,7 +190,7 @@ cargo run --example hybrid_search
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `time_filter` | `TimeFilter` | `TimeFilter::Any` | Provider query recency filter (`Any`, `Day`, `Week`, `Month`, `Year`). |
-| `ranking_mode` | `RankingMode` | `RankingMode::Sparse` | Scoring algorithm (`Sparse` BM25, `Dense` Cosine, or `Hybrid` RRF). |
+| `ranking_mode` | `RankingMode` | `RankingMode::Sparse` | Scoring algorithm (`Sparse` BM25, `Dense` Cosine, or `Hybrid` weighted blend). |
 | `max_candidates` | `usize` | `3` | Maximum candidate search result pages to fetch and extract. |
 | `chunk_size_words` | `usize` | `150` | Target passage chunk size in words. |
 | `chunk_overlap_words`| `usize` | `30` | Overlap in words between consecutive passage chunks. |
@@ -227,7 +228,7 @@ submodules/nexus-rs/
     ├── lib.rs            # Library entrypoint and public re-exports
     ├── model.rs          # Domain structs and option envelopes
     ├── pipeline.rs       # 3-stage search, extraction, and ranking pipeline
-    ├── ranking/          # Sparse BM25, Dense Cosine, and Hybrid RRF rankers
+    ├── ranking/          # Sparse BM25, Dense Cosine, and weighted Hybrid rankers
     └── traits.rs         # Async TextEmbedder trait
 ```
 

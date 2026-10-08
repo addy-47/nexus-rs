@@ -117,7 +117,127 @@ pub fn is_code_like(text: &str) -> bool {
 /// shaped tokens (`all-MiniLM-L6-v2`, `polyc-egress`, `v2026.9.6`, `3.75%`).
 ///
 /// Anchors are the load-bearing tokens a correct result must contain. G3 `ent_01`:
-/// Extracts concrete anchor entities (quoted phrases, versions, identifiers, years).
+/// Stopwords and question framing terms that should not act as substantive anchors.
+const STOPWORDS: &[&str] = &[
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "with",
+    "by",
+    "from",
+    "about",
+    "into",
+    "through",
+    "during",
+    "before",
+    "after",
+    "above",
+    "below",
+    "how",
+    "what",
+    "when",
+    "where",
+    "who",
+    "which",
+    "why",
+    "do",
+    "does",
+    "did",
+    "have",
+    "has",
+    "had",
+    "can",
+    "could",
+    "would",
+    "should",
+    "will",
+    "many",
+    "much",
+    "few",
+    "more",
+    "most",
+    "and",
+    "or",
+    "but",
+    "not",
+    "year",
+    "years",
+    "number",
+    "numbers",
+    "day",
+    "days",
+    "month",
+    "months",
+    "definition",
+    "meaning",
+    "name",
+    "names",
+    "current",
+    "best",
+    "latest",
+];
+
+/// Generic head-noun dictionary or disambiguation stubs to penalize when substantive query entities exist.
+const GENERIC_HEAD_STUBS: &[&str] = &[
+    "/wiki/year",
+    "/wiki/number",
+    "/wiki/month",
+    "/wiki/day",
+    "/wiki/calendar_year",
+    "dictionary.reverso.net",
+    "merriam-webster.com/dictionary/year",
+    "merriam-webster.com/dictionary/number",
+    "thefreedictionary.com/year",
+    "thefreedictionary.com/number",
+    "todaysdatenow.com",
+    "en.wiktionary.org/wiki/year",
+    "en.wiktionary.org/wiki/number",
+];
+
+/// Extracts substantive subject tokens (length >= 3, not in stopwords) from query.
+pub fn substantive_query_tokens(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for tok in query.split_whitespace() {
+        let clean = tok
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_ascii_lowercase();
+        if clean.len() >= 3 && !STOPWORDS.contains(&clean.as_str()) && !tokens.contains(&clean) {
+            tokens.push(clean);
+        }
+    }
+    tokens
+}
+
+/// Detects if a URL or title is a dictionary or generic head-noun stub.
+pub fn is_generic_head_stub(url: &str, title: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    let t = title.to_ascii_lowercase();
+    if GENERIC_HEAD_STUBS.iter().any(|stub| u.contains(stub)) {
+        return true;
+    }
+    if (t == "year - wikipedia" || t == "number - wikipedia" || t == "year" || t == "number")
+        && (u.contains("wikipedia.org/wiki/year") || u.contains("wikipedia.org/wiki/number"))
+    {
+        return true;
+    }
+    false
+}
+
+/// Extracts entity anchors from a query: quoted spans, version/identifiers,
+/// all-caps acronyms, or capitalized proper noun tokens.
 pub fn entity_anchors(query: &str) -> Vec<String> {
     let mut anchors = Vec::new();
     // Quoted spans first — explicit user intent.
@@ -134,17 +254,23 @@ pub fn entity_anchors(query: &str) -> Vec<String> {
             break;
         }
     }
-    // Identifier-shaped tokens: contain a digit, or a hyphen/slash/dot joining
-    // alphanumerics (crate names, model ids, versions). Plain English words
-    // (`all`, `best`, `reddit`) are deliberately NOT anchors.
+    // Identifier-shaped tokens, acronyms, or capitalized proper nouns
     for tok in query.split_whitespace() {
         let t = tok.trim_matches(|c: char| !c.is_alphanumeric());
-        if t.len() < 3 || anchors.iter().any(|a| a == &t.to_ascii_lowercase()) {
+        if t.len() < 2 || anchors.iter().any(|a| a == &t.to_ascii_lowercase()) {
             continue;
         }
         let has_digit = t.chars().any(|c| c.is_ascii_digit());
         let has_joiner = t.chars().any(|c| matches!(c, '-' | '/' | '.' | '_' | '+'));
-        if has_digit || (has_joiner && t.chars().any(|c| c.is_alphabetic())) {
+        let is_acronym = t.len() >= 2 && t.chars().all(|c| c.is_ascii_uppercase());
+        let is_capitalized = t.len() >= 3
+            && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && !STOPWORDS.contains(&t.to_ascii_lowercase().as_str());
+
+        if (t.len() >= 3 && (has_digit || (has_joiner && t.chars().any(|c| c.is_alphabetic()))))
+            || is_acronym
+            || is_capitalized
+        {
             anchors.push(t.to_ascii_lowercase());
         }
     }
@@ -181,7 +307,10 @@ fn domain_intent_domains(query: &str) -> Vec<&'static str> {
 pub fn extract_apex_domain(url: &str) -> String {
     let host = url::Url::parse(url)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_ascii_lowercase()))
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_start_matches("www.").to_ascii_lowercase())
+        })
         .unwrap_or_default();
     if host.is_empty() {
         return String::new();
@@ -193,7 +322,12 @@ pub fn extract_apex_domain(url: &str) -> String {
         // Handle common ccSLDs e.g. co.uk, com.au, org.uk, etc.
         let last = parts[parts.len() - 1];
         let second_last = parts[parts.len() - 2];
-        if last.len() == 2 && matches!(second_last, "co" | "com" | "org" | "gov" | "edu" | "ac" | "net") {
+        if last.len() == 2
+            && matches!(
+                second_last,
+                "co" | "com" | "org" | "gov" | "edu" | "ac" | "net"
+            )
+        {
             if parts.len() >= 3 {
                 format!("{}.{}.{}", parts[parts.len() - 3], second_last, last)
             } else {
@@ -205,26 +339,113 @@ pub fn extract_apex_domain(url: &str) -> String {
     }
 }
 
-/// Reorders candidate hits so anchored and intent-matching sources are fetched
-/// first, while enforcing domain diversity (max 1-2 per apex domain).
+/// Reorders candidate hits so anchored, substantive, and intent-matching sources
+/// are fetched first, while penalizing generic head-noun stubs and enforcing domain diversity.
 pub fn order_candidates(
     query: &str,
     mut hits: Vec<crate::model::EngineHit>,
     max_candidates: usize,
 ) -> Vec<String> {
     let anchors = entity_anchors(query);
+    let substantives = substantive_query_tokens(query);
     let intent_domains = domain_intent_domains(query);
 
-    if !anchors.is_empty() || !intent_domains.is_empty() {
-        let mut scored: Vec<(u8, usize)> = Vec::with_capacity(hits.len());
+    if !anchors.is_empty() || !substantives.is_empty() || !intent_domains.is_empty() {
+        let q_lower = query.to_ascii_lowercase();
+        let is_discussion_intent = q_lower.contains("discussion")
+            || q_lower.contains("reddit")
+            || q_lower.contains("forum")
+            || q_lower.contains("thread");
+        let has_substantive = !substantives.is_empty();
+
+        let mut scored: Vec<(i32, usize)> = Vec::with_capacity(hits.len());
         for (i, h) in hits.iter().enumerate() {
             let haystack = format!("{} {} {}", h.url, h.title, h.snippet).to_ascii_lowercase();
-            let mut rank: u8 = 0;
-            if anchors.iter().any(|a| haystack.contains(a)) {
-                rank += 2;
+            let title_lower = h.title.to_ascii_lowercase();
+            let mut rank: i32 = 0;
+
+            // Disqualify/penalize generic head-noun dictionary or disambiguation stubs
+            if has_substantive && is_generic_head_stub(&h.url, &h.title) {
+                rank -= 20;
             }
+
+            // High boost for concrete entity anchors (e.g. capitalized entities, versions, acronyms)
+            for a in &anchors {
+                if title_lower.contains(a) {
+                    rank += 6; // Primary subject entity in title
+                } else if haystack.contains(a) {
+                    rank += 3;
+                }
+            }
+
+            // Common measurement/metric/attribute words get lower weight (+1)
+            // Specific content nouns get standard weight (+2) or title boost (+4)
+            const GENERIC_METRIC_WORDS: &[&str] = &[
+                "sum",
+                "total",
+                "average",
+                "mean",
+                "median",
+                "range",
+                "level",
+                "degrees",
+                "meters",
+                "kilometers",
+                "miles",
+                "feet",
+                "inches",
+                "seconds",
+                "minutes",
+                "hours",
+                "rate",
+                "elevation",
+                "distance",
+                "temperature",
+                "pressure",
+                "frequency",
+                "value",
+                "speed",
+                "size",
+                "weight",
+                "height",
+                "depth",
+                "width",
+                "volume",
+                "area",
+                "length",
+                "price",
+                "cost",
+                "score",
+                "count",
+                "amount",
+                "ratio",
+                "percentage",
+            ];
+
+            let mut matched_substantives = 0;
+            for s in &substantives {
+                if haystack.contains(s) {
+                    let is_generic_metric = GENERIC_METRIC_WORDS.contains(&s.as_str());
+                    let weight = if is_generic_metric { 1 } else { 2 };
+                    rank += weight;
+                    if title_lower.contains(s) {
+                        matched_substantives += 1;
+                        if !is_generic_metric {
+                            rank += 2; // Specific content noun directly in title
+                        }
+                    }
+                }
+            }
+            // Multi-token subject match in title bonus (e.g. "Fall of the Berlin Wall")
+            if matched_substantives >= 2 {
+                rank += 4;
+            }
+
             if intent_domains.iter().any(|d| haystack.contains(d)) {
                 rank += 1;
+            }
+            if is_discussion_intent && h.url.contains("wikipedia.org") {
+                rank -= 2;
             }
             scored.push((rank, i));
         }

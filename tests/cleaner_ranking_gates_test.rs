@@ -321,9 +321,27 @@ async fn t_sparse_floor_above_one_empties() {
 #[tokio::test]
 async fn t_sparse_uniform_scores_all_become_one() {
     let mut v = vec![
-        passage("rust compiler memory safety alpha", "https://a.ex/", "A", 0, 0.0),
-        passage("rust compiler memory safety beta", "https://b.ex/", "B", 1, 0.0),
-        passage("rust compiler memory safety gamma", "https://c.ex/", "C", 2, 0.0),
+        passage(
+            "rust compiler memory safety alpha",
+            "https://a.ex/",
+            "A",
+            0,
+            0.0,
+        ),
+        passage(
+            "rust compiler memory safety beta",
+            "https://b.ex/",
+            "B",
+            1,
+            0.0,
+        ),
+        passage(
+            "rust compiler memory safety gamma",
+            "https://c.ex/",
+            "C",
+            2,
+            0.0,
+        ),
     ];
     rank_passages(
         RANK_QUERY,

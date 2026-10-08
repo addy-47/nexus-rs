@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chunk_overlap_words: 30,
         fetch_timeout_ms: 4000,
         max_response_bytes: 524_288,
-        focus: None,
+        fanout_deadline_ms: None,
     };
 
     println!("Executing hybrid RRF search for 'high performance rust async'...");
