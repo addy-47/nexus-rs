@@ -20,6 +20,7 @@ pub struct NexusSearchBuilder {
     fetch_concurrency: Option<usize>,
     fetch_timeout: Option<Duration>,
     max_response_bytes: Option<usize>,
+    searxng_url: Option<String>,
 }
 
 impl NexusSearchBuilder {
@@ -70,6 +71,12 @@ impl NexusSearchBuilder {
         self
     }
 
+    /// Sets the SearXNG instance URL enabling the SearXNG fallback engine.
+    pub fn with_searxng_url(mut self, url: impl Into<String>) -> Self {
+        self.searxng_url = Some(url.into());
+        self
+    }
+
     /// Validates configuration and constructs the finalized NexusSearch instance.
     pub fn build(self) -> Result<NexusSearch, NexusError> {
         if let Some(ref engines) = self.engines
@@ -102,6 +109,10 @@ impl NexusSearchBuilder {
         let fanout = match self.engines {
             Some(engines) => EngineFanout::new(engines, fanout_policy),
             None => EngineFanout::default(),
+        };
+        let fanout = match self.searxng_url {
+            Some(url) => fanout.with_searxng_url(url),
+            None => fanout,
         };
 
         let fetcher = EgressFetcher::new(

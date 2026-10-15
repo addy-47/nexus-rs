@@ -21,6 +21,22 @@ pub enum Engine {
     GoogleWml,
     /// Brave search.
     Brave,
+    /// Self-hosted SearXNG metasearch (requires instance URL configuration).
+    Searxng,
+    /// arXiv paper API (keyless, gated on academic queries).
+    Arxiv,
+    /// Semantic Scholar paper API (keyless, gated on academic queries).
+    Scholar,
+    /// Stack Exchange API (keyless, gated on Q&A-shaped queries).
+    StackExchange,
+    /// MDN Web Docs API (keyless, gated on web-platform queries).
+    Mdn,
+    /// GitHub issues/repositories API (keyless, gated on error/repo queries).
+    Github,
+    /// Hacker News Algolia API (keyless, gated on launch/discussion queries).
+    HackerNews,
+    /// Google News RSS (keyless, gated on news-shaped queries).
+    NewsRss,
     /// Wikipedia REST search API.
     Wikipedia,
 }
@@ -147,6 +163,29 @@ pub struct PageExtractMetrics {
     pub markdown_bytes: usize,
 }
 
+/// Machine-readable failure attribution for empty results (spec §6.2).
+/// Lets callers distinguish "nothing exists" from "we failed", and records
+/// the losing stage so the next attempt can act on it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    /// Engines returned no hits at all.
+    #[default]
+    NoHits,
+    /// Hits existed but too few pages survived fetch/extract gates.
+    FetchStarved,
+    /// Pages exist but none state the specific answer.
+    AnswerAbsent,
+    /// Passages were generated but all fell below the relevance floor.
+    LowScoreFloor,
+    /// Only a single passage from a single source survived. Below the
+    /// minimum for grounded delivery; adversarial queries otherwise pass
+    /// on one decontextualized hit.
+    ThinEvidence,
+    /// Context budget fit zero passages (Vox-side rendering verdict).
+    BudgetExhausted,
+}
+
 /// Comprehensive latency and throughput metrics across all pipeline stages.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct NexusSearchMetrics {
@@ -154,6 +193,9 @@ pub struct NexusSearchMetrics {
     /// `None` when the query is not value-seeking and no verification applies.
     /// Callers must not report retrieval success when this is `Some(Absent)`.
     pub answer_presence: Option<AnswerPresence>,
+    /// Machine-readable losing stage when no passages are delivered.
+    /// `None` on success.
+    pub failure_class: Option<FailureClass>,
     /// The answer shape inferred from the query, for telemetry.
     pub answer_shape: Option<AnswerShape>,
     /// Total search pipeline execution duration in milliseconds.
@@ -220,6 +262,10 @@ pub struct NexusSearchOptions {
     pub fetch_timeout_ms: u64,
     /// Maximum response bytes downloaded per individual candidate page.
     pub max_response_bytes: usize,
+    /// Extra candidates fetched beyond `max_candidates` so extraction-gate
+    /// losses (challenge pages, code dumps, language mismatch) still leave
+    /// enough survivors. Pool is capped to bound latency.
+    pub fetch_slack: usize,
     /// Optional dynamic deadline override for the search engine fanout wave in milliseconds.
     pub fanout_deadline_ms: Option<u64>,
 }
@@ -264,6 +310,12 @@ pub struct RankingPolicy {
     /// rejects the tail. Default 0.12; 0.0 disables the floor (not recommended —
     /// normalized noise will be delivered as evidence).
     pub min_score: f32,
+    /// Minimum fraction of distinctive query tokens that must appear across
+    /// the delivered set. Catches high-score total misses (embedding drift to
+    /// the head term) that the score floor cannot see. Default 0.5; 0.0
+    /// disables the gate. The drain decision additionally requires two or
+    /// more uncovered tokens so single-synonym variance never empties a set.
+    pub coverage_floor: f32,
 }
 
 impl Default for RankingPolicy {
@@ -273,6 +325,7 @@ impl Default for RankingPolicy {
             max_candidates_to_rerank: 10,
             consensus_multiplier: 1.5,
             min_score: 0.12,
+            coverage_floor: 0.5,
         }
     }
 }
@@ -287,6 +340,14 @@ impl fmt::Display for Engine {
             Self::Mojeek => write!(f, "mojeek"),
             Self::GoogleWml => write!(f, "google_wml"),
             Self::Brave => write!(f, "brave"),
+            Self::Searxng => write!(f, "searxng"),
+            Self::Arxiv => write!(f, "arxiv"),
+            Self::Scholar => write!(f, "scholar"),
+            Self::StackExchange => write!(f, "stackexchange"),
+            Self::Mdn => write!(f, "mdn"),
+            Self::Github => write!(f, "github"),
+            Self::HackerNews => write!(f, "hackernews"),
+            Self::NewsRss => write!(f, "news_rss"),
             Self::Wikipedia => write!(f, "wikipedia"),
         }
     }
@@ -303,12 +364,28 @@ impl Default for NexusSearchOptions {
             chunk_overlap_words: 30,
             fetch_timeout_ms: 4000,
             max_response_bytes: 524_288,
+            fetch_slack: 2,
             fanout_deadline_ms: None,
         }
     }
 }
 
 impl Engine {
+    /// True for keyless API verticals (gated per query) as opposed to
+    /// scraped web engines (always fired).
+    pub const fn is_vertical(self) -> bool {
+        matches!(
+            self,
+            Self::Arxiv
+                | Self::Scholar
+                | Self::StackExchange
+                | Self::Mdn
+                | Self::Github
+                | Self::HackerNews
+                | Self::NewsRss
+        )
+    }
+
     /// Returns the static lowercase string identifier of the engine.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -318,6 +395,14 @@ impl Engine {
             Self::Mojeek => "mojeek",
             Self::GoogleWml => "google_wml",
             Self::Brave => "brave",
+            Self::Searxng => "searxng",
+            Self::Arxiv => "arxiv",
+            Self::Scholar => "scholar",
+            Self::StackExchange => "stackexchange",
+            Self::Mdn => "mdn",
+            Self::Github => "github",
+            Self::HackerNews => "hackernews",
+            Self::NewsRss => "news_rss",
             Self::Wikipedia => "wikipedia",
         }
     }
@@ -329,6 +414,14 @@ impl Engine {
             Self::Mojeek => "mojeek",
             Self::GoogleWml => "google",
             Self::Brave => "brave",
+            Self::Searxng => "searxng",
+            Self::Arxiv => "arxiv",
+            Self::Scholar => "scholar",
+            Self::StackExchange => "stackexchange",
+            Self::Mdn => "mdn",
+            Self::Github => "github",
+            Self::HackerNews => "hackernews",
+            Self::NewsRss => "news",
             Self::Wikipedia => "wikipedia",
         }
     }

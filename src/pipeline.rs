@@ -60,6 +60,13 @@ impl Drop for InFlightGuard {
     }
 }
 
+/// True when delivery is a single passage from a single source — below the
+/// minimum for grounded delivery. Adversarial and false-friend queries
+/// otherwise pass on one decontextualized hit.
+pub fn is_thin_evidence(passage_count: usize, page_count: usize) -> bool {
+    passage_count == 1 && page_count == 1
+}
+
 /// Primary orchestrator for web search, document fetching, and relevance ranking.
 #[derive(Clone)]
 pub struct NexusSearch {
@@ -76,6 +83,11 @@ impl NexusSearch {
     /// Returns a new fluent builder for configuring a NexusSearch instance.
     pub fn builder() -> NexusSearchBuilder {
         NexusSearchBuilder::new()
+    }
+
+    /// Borrows the configured engine set for diagnostics and run manifests.
+    pub fn engines(&self) -> &[crate::model::Engine] {
+        self.fanout.engines()
     }
 
     /// Internal constructor used by NexusSearchBuilder.
@@ -140,8 +152,7 @@ impl NexusSearch {
     }
 
     /// Fetches a single page by URL, applying SSRF validation, redirects, and document extraction.
-    pub async fn fetch_page(&self, url: &str) -> Result<RawPage, NexusError> {
-        let fetched = self.fetcher.fetch_page(url).await;
+    pub async fn fetch_page(&self, url: &str) -> Result<RawPage, NexusError> {        let fetched = self.fetcher.fetch_page(url).await;
         match fetched.outcome {
             Ok((final_url, html)) => {
                 let doc = extraction::extract_document(
@@ -353,6 +364,7 @@ impl NexusSearch {
                     total_raw_hits: fanout_outcome.total_raw_hits,
                     deduplicated_hits: 0,
                     ranking_mode: options.ranking_mode,
+                    failure_class: Some(crate::model::FailureClass::NoHits),
                     ..Default::default()
                 },
             });
@@ -362,8 +374,11 @@ impl NexusSearch {
         let deduplicated_hits = fanout_outcome.hits.len();
         // P0-5: entity anchors + domain intent reorder candidates so fetch slots
         // go to sources that can satisfy the query. Never starves: unmatched
-        // hits follow in original order.
-        let fetch_candidate_count = (options.max_candidates + 2).clamp(options.max_candidates, 5);
+        // hits follow in original order. The pool exceeds max_candidates by
+        // fetch_slack so gate losses upstream of extraction still leave enough
+        // survivors; the pool cap bounds the concurrent fetch wave.
+        let fetch_candidate_count =
+            (options.max_candidates + options.fetch_slack).clamp(options.max_candidates, 8);
         let candidate_urls: Vec<String> = extraction::quality::order_candidates(
             trimmed_query,
             fanout_outcome.hits,
@@ -375,7 +390,7 @@ impl NexusSearch {
             .fetch_and_extract_pages(&candidate_urls, trimmed_query, options)
             .await;
 
-        let (passages, chunking_total_ms, ranking_outcome) = self
+        let (mut passages, generated_before_floor, chunking_total_ms, ranking_outcome) = self
             .chunk_and_rank_passages(
                 trimmed_query,
                 &raw_pages,
@@ -383,6 +398,38 @@ impl NexusSearch {
                 Some(&fanout_outcome.consensus_urls),
             )
             .await?;
+
+        // Query-term coverage gate: fraction coverage forgives incidental
+        // mentions (a `README.md` hit counts as much as a topical section),
+        // so the decision rests on the uncovered list. Two or more missing
+        // distinctive tokens means the actual ask is absent; a single miss is
+        // tolerated as synonym variance. Abstract queries never trip.
+        let uncovered = crate::extraction::quality::uncovered_query_tokens(trimmed_query, &passages);
+        if uncovered.len() >= 2 && self.ranking_policy.coverage_floor > 0.0 {
+            log::warn!(
+                "[Nexus::Coverage] Query='{}' missing distinctive tokens {:?}; draining {} passages (first: '{}' {:.3})",
+                trimmed_query,
+                uncovered,
+                passages.len(),
+                passages.first().map(|p| p.source_title.as_str()).unwrap_or(""),
+                passages.first().map(|p| p.score).unwrap_or(0.0),
+            );
+            passages.clear();
+        }
+
+        // Thin-evidence drain: a single passage from a single source is below
+        // the minimum for grounded delivery. Adversarial and false-friend
+        // queries otherwise pass on one decontextualized hit.
+        let mut thin_drain = false;
+        if is_thin_evidence(passages.len(), raw_pages.len()) {
+            log::warn!(
+                "[Nexus::Coverage] Query='{}' single passage from single source '{}'; draining",
+                trimmed_query,
+                passages[0].source_url,
+            );
+            passages.clear();
+            thin_drain = true;
+        }
 
         // Answer-presence verification (mechanism B guard): the correct page can be
         // fetched and ranked while the answer sentence never survives chunk selection.
@@ -414,8 +461,24 @@ impl NexusSearch {
         };
 
         let total_pipeline_ms = start_time.elapsed().as_millis() as u64;
+        // Failure attribution for empty delivery (spec §6.2). The first
+        // losing stage wins so the next attempt knows what to change.
+        let failure_class = if !passages.is_empty() {
+            None
+        } else if thin_drain {
+            Some(crate::model::FailureClass::ThinEvidence)
+        } else if answer_presence == Some(crate::answer_presence::AnswerPresence::Absent) {
+            Some(crate::model::FailureClass::AnswerAbsent)
+        } else if raw_pages.is_empty() {
+            Some(crate::model::FailureClass::FetchStarved)
+        } else if generated_before_floor > 0 {
+            Some(crate::model::FailureClass::LowScoreFloor)
+        } else {
+            Some(crate::model::FailureClass::FetchStarved)
+        };
         let metrics = NexusSearchMetrics {
             answer_presence,
+            failure_class,
             answer_shape: Some(answer_shape),
             total_pipeline_ms,
             fanout_total_ms,
@@ -428,7 +491,7 @@ impl NexusSearch {
             extraction_total_ms,
             pages_extracted,
             chunking_total_ms,
-            total_passages_generated: passages.len(),
+            total_passages_generated: generated_before_floor,
             ranking_total_ms: ranking_outcome.total_ranking_ms,
             ranking_mode: options.ranking_mode,
             sparse_ranking_ms: ranking_outcome.sparse_ranking_ms,
@@ -437,7 +500,7 @@ impl NexusSearch {
         };
 
         log::info!(
-            "[Nexus::Telemetry] Query='{}' total={}ms | Fanout: {}ms (raw={}, dedup={} in {}ms) | Fetch: {}ms (pages={}) | Extract: {}ms | Chunk: {}ms (passages={}) | Rank: {}ms (mode={:?}, sparse={:?}, dense={:?}, rrf={:?})",
+            "[Nexus::Telemetry] Query='{}' total={}ms | Fanout: {}ms (raw={}, dedup={} in {}ms) | Fetch: {}ms (pages={}) | Extract: {}ms | Chunk: {}ms (generated={}) | Rank: {}ms (mode={:?}, sparse={:?}, dense={:?}, rrf={:?}) | failure={:?}",
             trimmed_query,
             metrics.total_pipeline_ms,
             metrics.fanout_total_ms,
@@ -454,6 +517,7 @@ impl NexusSearch {
             metrics.sparse_ranking_ms,
             metrics.dense_ranking_ms,
             metrics.rrf_fusion_ms,
+            metrics.failure_class,
         );
 
         Ok(NexusSearchResult {
@@ -590,7 +654,15 @@ impl NexusSearch {
         raw_pages: &[RawPage],
         options: &NexusSearchOptions,
         consensus_urls: Option<&std::collections::HashSet<String>>,
-    ) -> Result<(Vec<ScoredPassage>, u64, ranking::RankingMetricsOutcome), NexusError> {
+    ) -> Result<
+        (
+            Vec<ScoredPassage>,
+            usize,
+            u64,
+            ranking::RankingMetricsOutcome,
+        ),
+        NexusError,
+    > {
         let chunk_start = std::time::Instant::now();
         let mut passages = chunking::chunk_pages(
             raw_pages,
@@ -598,6 +670,9 @@ impl NexusSearch {
             options.chunk_overlap_words,
         );
         let chunking_total_ms = chunk_start.elapsed().as_millis() as u64;
+        // Pre-floor count: calibrate_and_filter removes everything below
+        // min_score, so the floor's kill rate is only visible from this number.
+        let generated_before_floor = passages.len();
 
         let embedder_ref = self.embedder.as_ref().map(|arc| arc.as_ref());
         let ranking_outcome = ranking::rank_passages(
@@ -610,6 +685,11 @@ impl NexusSearch {
         )
         .await?;
 
-        Ok((passages, chunking_total_ms, ranking_outcome))
+        Ok((
+            passages,
+            generated_before_floor,
+            chunking_total_ms,
+            ranking_outcome,
+        ))
     }
 }

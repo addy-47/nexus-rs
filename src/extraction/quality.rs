@@ -153,6 +153,14 @@ const STOPWORDS: &[&str] = &[
     "who",
     "which",
     "why",
+    "this",
+    "that",
+    "these",
+    "those",
+    "it",
+    "its",
+    "they",
+    "them",
     "do",
     "does",
     "did",
@@ -459,6 +467,12 @@ pub fn order_candidates(
     let mut selected_urls = Vec::with_capacity(max_candidates);
     let mut domain_counts = std::collections::HashMap::new();
 
+    // Tiny pool: diversity caps are meaningless when the pool cannot fill the
+    // slots. Return every hit in ranked order instead of dropping any.
+    if hits.len() <= max_candidates {
+        return hits.into_iter().map(|h| h.url).collect();
+    }
+
     // Pass 1: max 1 per apex domain to ensure variety across sources
     for hit in &hits {
         if selected_urls.len() >= max_candidates {
@@ -472,7 +486,9 @@ pub fn order_candidates(
         }
     }
 
-    // Pass 2: if slots remain, allow up to 2 per apex domain
+    // Pass 2: if slots remain, allow up to 2 per apex domain. No uncapped
+    // fill pass follows: returning fewer diverse candidates beats filling
+    // slots with same-domain duplicates (F4 domain waste).
     if selected_urls.len() < max_candidates {
         for hit in &hits {
             if selected_urls.len() >= max_candidates {
@@ -490,19 +506,54 @@ pub fn order_candidates(
         }
     }
 
-    // Pass 3: fill any remainder if candidate pool is tiny
-    if selected_urls.len() < max_candidates {
-        for hit in &hits {
-            if selected_urls.len() >= max_candidates {
-                break;
-            }
-            if !selected_urls.iter().any(|u| u == &hit.url) {
-                selected_urls.push(hit.url.clone());
-            }
-        }
-    }
-
     selected_urls
+}
+
+/// Fraction of distinctive query tokens appearing across the delivered set.
+///
+/// A high fused score with near-zero coverage means embedding drift to the
+/// head term (long_02: 0.618 on Rust-language content for an
+/// "HTML-to-markdown libraries" query). Returns 1.0 when the query has no
+/// distinctive tokens so abstract queries never trip the gate.
+pub fn passage_set_coverage(query: &str, passages: &[crate::model::ScoredPassage]) -> f32 {
+    let tokens = substantive_query_tokens(query);
+    if tokens.is_empty() || passages.is_empty() {
+        return 1.0;
+    }
+    let corpus: String = passages
+        .iter()
+        .map(|p| format!("{} {}", p.source_title, p.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
+    let covered = tokens.iter().filter(|t| corpus.contains(t.as_str())).count();
+    covered as f32 / tokens.len() as f32
+}
+
+/// Distinctive query tokens missing from the delivered set.
+///
+/// Fraction coverage forgives incidental mentions (a `README.md` hit counts
+/// as much as a topical section). The missing list is strict: every
+/// uncovered token is named, so callers can distinguish "one synonym short"
+/// from "the actual ask is absent". Empty when nothing is missing.
+pub fn uncovered_query_tokens(
+    query: &str,
+    passages: &[crate::model::ScoredPassage],
+) -> Vec<String> {
+    let tokens = substantive_query_tokens(query);
+    if tokens.is_empty() || passages.is_empty() {
+        return Vec::new();
+    }
+    let corpus: String = passages
+        .iter()
+        .map(|p| format!("{} {}", p.source_title, p.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
+    tokens
+        .into_iter()
+        .filter(|t| !corpus.contains(t.as_str()))
+        .collect()
 }
 
 /// Detects a language mismatch signalled by the URL itself.

@@ -16,6 +16,8 @@ pub mod google_wml;
 pub mod health;
 pub mod helpers;
 pub mod mojeek;
+pub mod searxng;
+pub mod verticals;
 pub mod wikipedia;
 pub mod yahoo;
 
@@ -40,6 +42,7 @@ pub struct EngineFanout {
     engines: Vec<Engine>,
     policy: FanoutPolicy,
     health: Arc<RwLock<EngineHealthTracker>>,
+    searxng_url: Option<String>,
 }
 
 impl Default for EngineFanout {
@@ -60,6 +63,7 @@ impl Default for EngineFanout {
             ],
             policy: FanoutPolicy::default(),
             health: Arc::new(RwLock::new(EngineHealthTracker::new())),
+            searxng_url: None,
         }
     }
 }
@@ -71,6 +75,7 @@ impl EngineFanout {
             engines,
             policy,
             health: Arc::new(RwLock::new(EngineHealthTracker::new())),
+            searxng_url: None,
         }
     }
 
@@ -84,7 +89,20 @@ impl EngineFanout {
             engines,
             policy,
             health,
+            searxng_url: None,
         }
+    }
+
+    /// Sets the SearXNG instance URL. The SearXNG engine is skipped at
+    /// fanout time while this remains unset.
+    pub fn with_searxng_url(mut self, url: impl Into<String>) -> Self {
+        let trimmed = url.into().trim().to_string();
+        self.searxng_url = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        };
+        self
     }
 
     /// Borrows the configured engine set.
@@ -123,6 +141,34 @@ impl EngineFanout {
         let mut engine_metrics = Vec::with_capacity(self.engines.len());
 
         for &engine in &self.engines {
+            if engine == Engine::Searxng && self.searxng_url.is_none() {
+                log::info!("[Nexus::Engines] Skipping SearXNG engine (no instance URL configured)");
+                engine_metrics.push(EngineQueryMetrics {
+                    engine,
+                    latency_ms: 0,
+                    hit_count: 0,
+                    success: false,
+                    error: Some("unconfigured".to_string()),
+                });
+                continue;
+            }
+
+            // Verticals fire only when the query looks like their material;
+            // otherwise they burn budget and pollute the merge.
+            if engine.is_vertical() && !verticals::should_query(engine, query) {
+                log::info!(
+                    "[Nexus::Engines] Skipping gated vertical {engine:?} (query shape mismatch)"
+                );
+                engine_metrics.push(EngineQueryMetrics {
+                    engine,
+                    latency_ms: 0,
+                    hit_count: 0,
+                    success: false,
+                    error: Some("gated".to_string()),
+                });
+                continue;
+            }
+
             if self
                 .health
                 .read()
@@ -142,12 +188,18 @@ impl EngineFanout {
 
             let client_ref = client.clone();
             let q = query.to_owned();
+            let searxng_url = self.searxng_url.clone();
             tasks.push(async move {
                 let start = std::time::Instant::now();
-                let res_unwind =
-                    AssertUnwindSafe(dispatch_engine_query(&client_ref, engine, &q, time_filter))
-                        .catch_unwind()
-                        .await;
+                let res_unwind = AssertUnwindSafe(dispatch_engine_query(
+                    &client_ref,
+                    engine,
+                    &q,
+                    time_filter,
+                    searxng_url.as_deref(),
+                ))
+                .catch_unwind()
+                .await;
                 let latency_ms = start.elapsed().as_millis() as u64;
                 let res = match res_unwind {
                     Ok(r) => r,
@@ -178,7 +230,11 @@ impl EngineFanout {
         let deadline = Instant::now() + Duration::from_millis(deadline_ms);
         let mut all_hits = Vec::new();
         let mut successful_queries = 0usize;
-        let mut successful_web_queries = 0usize;
+        // Engines that actually contributed candidates. Empty-but-successful
+        // responses (e.g. a gated vertical's API with no matches) must not
+        // satisfy quorum: they carry no domains or hits, yet previously
+        // counted toward early exit and dropped slower engines mid-flight.
+        let mut contributing_engines = 0usize;
         let mut total_raw_hits = 0usize;
         let mut seen_domains = HashSet::new();
         let mut seen_canonical = HashSet::new();
@@ -205,8 +261,8 @@ impl EngineFanout {
                             let mut h = self.health.write().unwrap_or_else(|e| e.into_inner());
                             h.record_success(engine, latency_ms);
                             successful_queries += 1;
-                            if engine != Engine::Wikipedia {
-                                successful_web_queries += 1;
+                            if !hits.is_empty() {
+                                contributing_engines += 1;
                             }
                             total_raw_hits += hits.len();
                             log::info!(
@@ -231,14 +287,15 @@ impl EngineFanout {
                             }
                             all_hits.push(hits);
 
-                            // Check adaptive quorum early-exit condition (Wikipedia hits do not satisfy web engine quorum):
-                            if successful_web_queries >= self.policy.min_reporting_engines
+                            // Check adaptive quorum early-exit condition:
+                            // only contributing engines count — empty responses carry no candidates to exit on.
+                            if contributing_engines >= self.policy.min_reporting_engines
                                 && seen_domains.len() >= self.policy.min_distinct_domains
                                 && seen_canonical.len() >= self.policy.min_candidate_hits
                             {
                                 log::info!(
-                                    "[Nexus::Engines] Early-exit quorum satisfied (reporting_web_engines={}, distinct_domains={}, candidate_hits={}). Dropping tail engine queries.",
-                                    successful_web_queries,
+                                    "[Nexus::Engines] Early-exit quorum satisfied (contributing_engines={}, distinct_domains={}, candidate_hits={}). Dropping tail engine queries.",
+                                    contributing_engines,
                                     seen_domains.len(),
                                     seen_canonical.len()
                                 );
@@ -283,8 +340,29 @@ impl EngineFanout {
         }
 
         if successful_queries == 0 && !self.engines.is_empty() {
+            // Nothing was attempted (every engine skipped: quarantined or
+            // unconfigured). That is an empty result with reasons attached,
+            // not a transport failure — return the metrics, not an error.
+            let attempted = engine_metrics
+                .iter()
+                .filter(|m| {
+                    !matches!(
+                        m.error.as_deref(),
+                        Some("quarantined") | Some("unconfigured") | Some("gated")
+                    )
+                })
+                .count();
+            if attempted == 0 {
+                return Ok(FanoutOutcome {
+                    hits: Vec::new(),
+                    metrics: engine_metrics,
+                    total_raw_hits,
+                    consensus_urls: HashSet::new(),
+                });
+            }
             return Err(NexusError::AllProvidersFailed {
-                attempted: self.engines.len(),
+                attempted,
+                metrics: engine_metrics,
             });
         }
 
@@ -321,6 +399,7 @@ async fn dispatch_engine_query(
     engine: Engine,
     query: &str,
     time_filter: TimeFilter,
+    searxng_url: Option<&str>,
 ) -> Result<Vec<EngineHit>, NexusError> {
     if std::env::var_os("NEXUS_TEST_HOOKS").is_some() {
         if query == "__test_panic_engine__" {
@@ -349,6 +428,19 @@ async fn dispatch_engine_query(
         Engine::Mojeek => mojeek::query_mojeek(client, query, time_filter).await,
         Engine::GoogleWml => google_wml::query_google_wml(client, query, time_filter).await,
         Engine::Brave => brave::query_brave(client, query, time_filter).await,
+        Engine::Searxng => match searxng_url {
+            Some(url) => searxng::query_searxng(client, url, query, time_filter).await,
+            None => Err(NexusError::InvalidConfiguration(
+                "SearXNG engine enabled without an instance URL".to_string(),
+            )),
+        },
+        Engine::Arxiv
+        | Engine::Scholar
+        | Engine::StackExchange
+        | Engine::Mdn
+        | Engine::Github
+        | Engine::HackerNews
+        | Engine::NewsRss => verticals::query_vertical(client, engine, query, time_filter).await,
         Engine::Wikipedia => wikipedia::query_wikipedia(client, query).await,
     }
 }

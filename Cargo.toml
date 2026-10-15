@@ -1,6 +1,6 @@
 [package]
 name = "nexuss"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.89"
 description = "High-performance, standalone search and retrieval engine for AI agents. Multi-engine fanout, SSRF-hardened page extraction, tri-mode relevance ranking (BM25, Dense, weighted Hybrid), and answer-presence verification."

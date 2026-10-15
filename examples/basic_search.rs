@@ -17,6 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chunk_overlap_words: 30,
         fetch_timeout_ms: 4000,
         max_response_bytes: 524_288,
+        fetch_slack: 2,
         fanout_deadline_ms: None,
     };
 

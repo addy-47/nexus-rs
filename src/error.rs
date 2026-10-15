@@ -75,6 +75,9 @@ pub enum NexusError {
     AllProvidersFailed {
         /// Number of providers attempted.
         attempted: usize,
+        /// Per-engine outcomes, so callers can distinguish transport failures
+        /// from skips (quarantined/unconfigured) instead of guessing.
+        metrics: Vec<crate::model::EngineQueryMetrics>,
     },
 
     /// Request exceeded the overall deadline.

@@ -13,8 +13,10 @@ use std::time::Duration;
 use nexus::Engine;
 use nexus::engines::bing::parse_bing_html;
 use nexus::engines::duckduckgo::parse_duckduckgo_html;
+use nexus::engines::duckduckgo::parse_duckduckgo_lite_html;
 use nexus::engines::helpers::canonicalize_url;
 use nexus::engines::mojeek::parse_mojeek_html;
+use nexus::engines::searxng::parse_searxng_json;
 use nexus::engines::yahoo::parse_yahoo_html;
 
 #[tokio::test]
@@ -266,4 +268,144 @@ async fn test_wikipedia_json_parsing() {
         "https://en.wikipedia.org/wiki/Rust_(programming_language)"
     );
     assert!(hits[0].snippet.contains("multi-paradigm"));
+}
+
+#[tokio::test]
+async fn test_duckduckgo_lite_table_parsing_and_uddg_decoding() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let lite_html = r#"
+            <table>
+                <tr>
+                    <td><a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage1&rut=abc123">First Result Title</a></td>
+                    <td class="result-snippet">First snippet text.</td>
+                </tr>
+                <tr>
+                    <td><a class="result-link" href="https://example.org/page2">Second Result Title</a></td>
+                    <td class="result-snippet">Second snippet text.</td>
+                </tr>
+            </table>
+        "#;
+
+        let hits = parse_duckduckgo_lite_html(lite_html).expect("Lite parsing should succeed");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].engine, Engine::Duckduckgo);
+        assert_eq!(hits[1].engine, Engine::Duckduckgo);
+        assert_eq!(hits[0].title, "First Result Title");
+        assert_eq!(hits[0].url, "https://example.com/page1");
+        assert!(hits[0].snippet.contains("First snippet text"));
+        assert_eq!(hits[1].title, "Second Result Title");
+        assert_eq!(hits[1].url, "https://example.org/page2");
+        assert!(hits[1].snippet.contains("Second snippet text"));
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[tokio::test]
+async fn test_duckduckgo_lite_challenge_detection() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let anomaly_html = r#"<html><body><p>anomaly detected</p></body></html>"#;
+        assert!(
+            parse_duckduckgo_lite_html(anomaly_html).is_err(),
+            "Must report error on anomaly marker"
+        );
+
+        let captcha_html = r#"<html><body><p>captcha required</p></body></html>"#;
+        assert!(
+            parse_duckduckgo_lite_html(captcha_html).is_err(),
+            "Must report error on captcha marker"
+        );
+
+        let form_html =
+            r#"<html><body><form id="challenge-form" action="/lite/"></form></body></html>"#;
+        assert!(
+            parse_duckduckgo_lite_html(form_html).is_err(),
+            "Must report error on challenge-form marker"
+        );
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[tokio::test]
+async fn test_duckduckgo_lite_skips_relative_and_non_http_hrefs() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let lite_html = r#"
+            <table>
+                <tr>
+                    <td><a class="result-link" href="/lite/?q=rust">Relative Link</a></td>
+                    <td class="result-snippet">Relative snippet.</td>
+                </tr>
+                <tr>
+                    <td><a class="result-link" href="javascript:void(0)">JS Link</a></td>
+                    <td class="result-snippet">JS snippet.</td>
+                </tr>
+                <tr>
+                    <td><a class="result-link" href="">Empty Link</a></td>
+                    <td class="result-snippet">Empty snippet.</td>
+                </tr>
+                <tr>
+                    <td><a class="result-link" href="https://example.com/valid">Valid Title</a></td>
+                    <td class="result-snippet">Valid snippet.</td>
+                </tr>
+            </table>
+        "#;
+
+        let hits = parse_duckduckgo_lite_html(lite_html).expect("Lite parsing should succeed");
+        assert_eq!(hits.len(), 1, "Only the absolute http href must survive");
+        assert_eq!(hits[0].title, "Valid Title");
+        assert_eq!(hits[0].url, "https://example.com/valid");
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[tokio::test]
+async fn test_searxng_json_parsing() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let body = r#"{
+            "results": [
+                {"title": "Rust Programming Language", "url": "https://www.rust-lang.org/", "content": "A language empowering everyone to build reliable software."},
+                {"title": "crates.io", "url": "http://crates.io/", "content": "The Rust package registry."}
+            ]
+        }"#;
+
+        let hits = parse_searxng_json(body).expect("SearXNG parsing should succeed");
+        assert_eq!(hits.len(), 2);
+        for hit in &hits {
+            assert_eq!(hit.engine, Engine::Searxng);
+        }
+        assert_eq!(hits[0].title, "Rust Programming Language");
+        assert_eq!(hits[0].url, "https://www.rust-lang.org/");
+        assert!(hits[0].snippet.contains("reliable software"));
+        assert_eq!(hits[1].title, "crates.io");
+        assert_eq!(hits[1].url, "http://crates.io/");
+    })
+    .await
+    .expect("test timed out");
+}
+
+#[tokio::test]
+async fn test_searxng_json_skips_non_http_urls_and_empty_titles() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let body = r#"{
+            "results": [
+                {"title": "Valid Hit", "url": "https://example.com/valid", "content": "Kept."},
+                {"title": "FTP Hit", "url": "ftp://example.com/file", "content": "Dropped: non-http."},
+                {"title": "Relative Hit", "url": "/search?q=rust", "content": "Dropped: non-http."},
+                {"title": "", "url": "https://example.com/empty-title", "content": "Dropped: empty title."},
+                {"title": "   ", "url": "https://example.com/blank-title", "content": "Dropped: blank title."},
+                {"url": "https://example.com/missing-title", "content": "Dropped: missing title."},
+                {"title": "Missing URL", "content": "Dropped: missing url."}
+            ]
+        }"#;
+
+        let hits = parse_searxng_json(body).expect("SearXNG parsing should succeed");
+        assert_eq!(hits.len(), 1, "Only the valid http hit with a title must survive");
+        assert_eq!(hits[0].title, "Valid Hit");
+        assert_eq!(hits[0].url, "https://example.com/valid");
+        assert_eq!(hits[0].engine, Engine::Searxng);
+    })
+    .await
+    .expect("test timed out");
 }
